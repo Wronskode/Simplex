@@ -690,6 +690,8 @@ pub fn parse_lp_two_phases(
     Ok((matrix, var_list, is_min, variables, orignal_cost))
 }
 
+
+// Simplex iteration
 #[inline(always)]
 fn update_array(
     matrix: &mut [Vec<f64>],
@@ -977,23 +979,6 @@ fn two_phases(
             return false;
         }
         compteur += 1;
-    }
-}
-
-fn rescale(matrix: &mut [Vec<f64>], sorted_by_column: &[usize]) {
-    for j in 0..matrix.len() {
-        let max_in_row = *matrix[j]
-            .iter()
-            .max_by(|a, b| a.abs().total_cmp(&b.abs())).unwrap();
-
-    if max_in_row > 1.0e4 {
-        // let min_in_row = *matrix[j]
-        //     .iter()
-        //     .min_by(|a, b| a.total_cmp(&b)).unwrap();
-        for i in 0..matrix[j].len() {
-            matrix[j][i] /= max_in_row;
-        }
-    }
     }
 }
 
