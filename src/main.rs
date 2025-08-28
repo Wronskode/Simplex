@@ -10,7 +10,7 @@ mod simplexef64;
 #[tokio::main]
 async fn server() {
     let app = Router::new()
-        .route("/simplexe", post(simplexe))
+        .route("/simplex", post(simplexe))
         .route("/branch_and_bound", post(branch_and_bound))
         .layer(DefaultBodyLimit::max(1024*1024*50));
 
