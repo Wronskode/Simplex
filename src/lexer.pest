@@ -1,0 +1,17 @@
+obj = { "max"|"min" }
+plus = { "+" }
+minus = { "-" }
+float = { (plus|minus)?~integer?~"."~integer? }
+integer = { ASCII_DIGIT+ }
+coeff = { (plus|minus)?~(float|integer)?}
+number = { (plus|minus)?~(float|integer)}
+varname = {char~(char|ASCII_DIGIT)*}
+geq = {">="}
+leq = {"<="}
+eq = {"="}
+semicolon = {";"}
+char = { ASCII_ALPHA | "_" }
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+function = { obj ~ ":" ~ (coeff ~ varname)+~semicolon}
+constraint = { (coeff~varname)* ~ (geq | leq | eq) ~ number ~ semicolon }
+program = { function ~ constraint+ ~ (!constraint ~ ANY)* ~ constraint* }

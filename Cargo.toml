@@ -1,0 +1,15 @@
+[package]
+name = "simplexe"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = "0.8.3"
+num = {version = "0.4.3", features=["serde"]}
+num-rational = { version = "0.4.2", features = ["serde", "num-bigint"] }
+pest = "2.8.0"
+pest_derive = "2.8.0"
+rayon = "1.10.0"
+rug = "1.27.0"
+serde = {version = "1.0.219", features = ["derive"]}
+tokio = { version = "1.44.2", features = ["full"] }
