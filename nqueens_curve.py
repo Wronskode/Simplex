@@ -9,7 +9,7 @@ def run_simplexe_nqueens(n_start, n_end):
     print("Début des mesures de temps d'exécution...")
 
     for n in range(n_start, n_end + 1):
-        file_name = f"{n}queens.lp"
+        file_name = f"instances/{n}queens.lp"
         program_path = "./target/release/simplexe"
         command = [program_path, file_name]
         
