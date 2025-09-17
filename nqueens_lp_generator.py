@@ -1,4 +1,4 @@
-for n in range(8, 21):
+for n in range(8, 26):
     filetxt = ""
     filetxt += "min: z;\n"
     for j in range(1, n+1):
