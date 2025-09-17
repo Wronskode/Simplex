@@ -8,50 +8,6 @@ use std::collections::HashMap;
 #[grammar = "lexer.pest"]
 pub struct LPParser;
 const PRECISION: f64 = 1.0e-6;
-#[inline(always)]
-pub fn solve_system_bigm(
-    matrix: &mut [Vec<f64>],
-    variables: &mut [Variable],
-    vars_hash_map: &mut HashMap<String, usize>,
-    is_min: f64,
-) -> Result<(Vec<(String, f64)>, f64), String> {
-    // rayon::ThreadPoolBuilder::new()
-    // .num_threads(4)
-    // .build_global()
-    // .unwrap();
-    let borned = big_m(matrix, variables, vars_hash_map, false);
-    if !borned {
-        return Err("Le problème est non borné".to_string());
-    }
-    let solved = check_all_constraints(matrix, variables);
-    if !solved {
-        return Err("Le problème est infaisable".to_string());
-    }
-    get_solution(matrix, variables, vars_hash_map, is_min)
-}
-
-#[inline(always)]
-pub fn solve_system_two_phases(
-    matrix: &mut [Vec<f64>],
-    variables: &mut [Variable],
-    vars_hash_map: &mut HashMap<String, usize>,
-    original_cost: &HashMap<String, f64>,
-    is_min: f64,
-) -> Result<(Vec<(String, f64)>, f64), String> {
-    two_phases(
-        matrix,
-        variables,
-        vars_hash_map,
-        original_cost,
-        false,
-        is_min,
-    );
-    let solved = check_all_constraints(matrix, variables);
-    if !solved {
-        return Err("Le problème est infaisable".to_string());
-    }
-    get_solution(matrix, variables, vars_hash_map, is_min)
-}
 
 #[inline(always)]
 fn get_solution(
@@ -640,7 +596,6 @@ pub fn parse_lp_two_phases(
     Ok((matrix, var_list, is_min, variables, orignal_cost, bnb))
 }
 
-
 // Simplex iteration
 #[inline(always)]
 fn update_array(
@@ -648,21 +603,30 @@ fn update_array(
     variables: &mut [Variable],
     sorted_by_column: &mut [usize],
     in_base: &mut [f64],
+    base_variables: &mut [usize],
     in_phase_one: bool,
     in_phase_two: bool,
 ) -> (bool, bool) {
-    let (min_col_index, min) = sorted_by_column.par_iter().skip(1).enumerate().map(|(i, _)| {
-        let y = variables[sorted_by_column[i]];
-        if !y.in_base && (!in_phase_two || !y.is_artificial) {
-            Some((i+1, scalar_product_column(in_base, matrix, i+1) - y.cout_original))
-        }
-        else {
-            None
-        }
-    }).filter_map(|x| x).min_by(|a, b| a.1.total_cmp(&b.1)).unwrap_or((0, f64::MAX));
+    let (min_col_index, min) = sorted_by_column
+        .par_iter()
+        .skip(1)
+        .enumerate()
+        .map(|(i, _)| {
+            let y = variables[sorted_by_column[i]];
+            if !y.in_base && (!in_phase_two || !y.is_artificial) {
+                Some((i + 1, scalar_product_column(in_base, matrix, i + 1) - y.cout_original))
+            } else {
+                None
+            }
+        })
+        .filter_map(|x| x)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .unwrap_or((0, f64::MAX));
+
     if min >= 0.0 {
         return (true, true);
     }
+
     let mut min = f64::MAX;
     let mut line_index = 0;
     let mut leaved = false;
@@ -672,58 +636,49 @@ fn update_array(
         }
         let scalar = item[0] / item[min_col_index];
         if in_phase_one
-            && scalar == min
-            && variables
-                .iter()
-                .find(|v| v.ligne == i)
-                .unwrap()
-                .is_artificial
+            && (scalar - min).abs() < PRECISION
+            && variables[base_variables[i]].is_artificial
         {
             line_index = i;
         }
-        if scalar < min && scalar >= 0.0 {
+        if scalar < min && scalar >= -PRECISION {
             leaved = true;
             min = scalar;
             line_index = i;
         }
     }
+
     if !leaved {
         return (true, false);
     }
-    if let Some(var) = variables.iter().position(|v| v.ligne == line_index) {
-        variables[var].in_base = false;
-        sorted_by_column[variables[var].column - 1] = var;
-        variables[var].ligne = usize::MAX;
-    }
-    if let Some(y) = sorted_by_column.get_mut(min_col_index - 1) {
-        let v = variables.get_mut(*y).unwrap();
-        v.in_base = true;
-        v.ligne = line_index;
-        in_base[line_index] = v.cout_original;
-        sorted_by_column[min_col_index - 1] = *y;
-        let pos = variables
-            .iter()
-            .position(|v| v.column == min_col_index)
-            .unwrap();
-        variables[pos].in_base = true;
-        variables[pos].ligne = line_index;
-    }
+
+    let var_to_leave = base_variables[line_index];
+    variables[var_to_leave].in_base = false;
+    variables[var_to_leave].ligne = usize::MAX;
+
+    let new_base_var_index = sorted_by_column[min_col_index - 1];
+    variables[new_base_var_index].in_base = true;
+    variables[new_base_var_index].ligne = line_index;
+    in_base[line_index] = variables[new_base_var_index].cout_original;
+    base_variables[line_index] = new_base_var_index;
+
     let pivot = matrix[line_index][min_col_index];
     matrix[line_index].iter_mut().for_each(|x| {
-            if (*x).abs() > PRECISION {
-                *x /= pivot;
-            }
-            else {
-                *x = 0.0;
-            }
+        if (*x).abs() > PRECISION {
+            *x /= pivot;
+        } else {
+            *x = 0.0;
+        }
     });
+
     let pivot_row = matrix[line_index].clone();
     matrix.par_iter_mut().enumerate().filter(|(i, row)| *i != line_index && row[min_col_index].abs() > PRECISION).for_each(|(_, row)| {
         let coeff = row[min_col_index];
         pivot_row.iter().enumerate().filter(|(_, x)| (**x).abs() > PRECISION).for_each(|(j, x)| {
-                row[j] -= x * coeff;
+            row[j] -= x * coeff;
         });
     });
+
     (false, true)
 }
 
@@ -764,43 +719,60 @@ fn scalar_product_column(x: &[f64], matrix: &[Vec<f64>], j: usize) -> f64 {
         .sum()
 }
 #[inline(always)]
-fn big_m(
+pub fn solve_system_two_phases(
     matrix: &mut [Vec<f64>],
     variables: &mut [Variable],
-    hmap_vars: &mut HashMap<String, usize>,
-    print: bool,
-) -> bool {
-    let mut sorted_by_column = hmap_vars.values().copied().collect::<Vec<_>>();
-    sorted_by_column.sort_by(|a, b| variables[*a].column.cmp(&variables[*b].column));
-    let mut in_base = variables
-        .par_iter()
-        .filter(|x| x.in_base)
-        .map(|x| (x.ligne, x.cout_original))
-        .collect::<Vec<_>>();
-    in_base.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut in_base = in_base.iter().map(|x| x.1).collect::<Vec<_>>();
-    loop {
-        if print {
-            print_system(matrix, variables, hmap_vars, true);
-        }
-        let (ended, borned) = update_array(
-            matrix,
-            variables,
-            &mut sorted_by_column,
-            &mut in_base,
-            false,
-            false,
-        );
-        if print {
-            print_system(matrix, variables, hmap_vars, true);
-        }
-        if ended {
-            if print {
-                print_system(matrix, variables, hmap_vars, true);
-            }
-            return borned;
+    vars_hash_map: &mut HashMap<String, usize>,
+    original_cost: &HashMap<String, f64>,
+    is_min: f64,
+) -> Result<(Vec<(String, f64)>, f64), String> {
+    let solved = two_phases(
+        matrix,
+        variables,
+        vars_hash_map,
+        original_cost,
+        false,
+        is_min,
+    );
+
+    if !solved {
+        return Err("Le problème est infaisable".to_string());
+    }
+
+    let solved_constraints = check_all_constraints(matrix, variables);
+    if !solved_constraints {
+        return Err("Le problème est infaisable".to_string());
+    }
+    
+    get_solution(matrix, variables, vars_hash_map, is_min)
+}
+
+#[inline(always)]
+pub fn solve_system_bigm(
+    matrix: &mut [Vec<f64>],
+    variables: &mut [Variable],
+    vars_hash_map: &mut HashMap<String, usize>,
+    is_min: f64,
+) -> Result<(Vec<(String, f64)>, f64), String> {
+    let mut base_variables = vec![0; matrix.len()];
+    for (idx, var) in variables.iter().enumerate() {
+        if var.in_base {
+            base_variables[var.ligne] = idx;
         }
     }
+
+    let borned = big_m(matrix, variables, vars_hash_map, false, &mut base_variables);
+    
+    if !borned {
+        return Err("Le problème est non borné".to_string());
+    }
+    
+    let solved = check_all_constraints(matrix, variables);
+    if !solved {
+        return Err("Le problème est infaisable".to_string());
+    }
+    
+    get_solution(matrix, variables, vars_hash_map, is_min)
 }
 
 #[inline(always)]
@@ -812,8 +784,16 @@ fn two_phases(
     print: bool,
     is_min: f64,
 ) -> bool {
+    let mut base_variables = vec![0; matrix.len()];
+    for (idx, var) in variables.iter().enumerate() {
+        if var.in_base {
+            base_variables[var.ligne] = idx;
+        }
+    }
+
     let mut sorted_by_column = hmap_vars.values().copied().collect::<Vec<_>>();
     sorted_by_column.sort_by(|a, b| variables[*a].column.cmp(&variables[*b].column));
+
     let mut in_base = variables
         .par_iter()
         .filter(|x| x.in_base)
@@ -821,21 +801,27 @@ fn two_phases(
         .collect::<Vec<_>>();
     in_base.sort_by(|a, b| a.0.cmp(&b.0));
     let mut in_base = in_base.iter().map(|x| x.1).collect::<Vec<_>>();
+
     if print {
         print_system(matrix, variables, hmap_vars, true);
     }
+
+    // Phase 1 : minimisation des variables artificielles
     loop {
         let (s1, s2) = update_array(
             matrix,
             variables,
             &mut sorted_by_column,
             &mut in_base,
+            &mut base_variables,
             true,
             false,
         );
+
         if print {
             print_system(matrix, variables, hmap_vars, true);
         }
+
         let z = get_objective(matrix, variables, is_min);
         let all_positive = s1 && s2;
         matrix.par_iter_mut().for_each(|row| {
@@ -843,8 +829,9 @@ fn two_phases(
                 if (*x).abs() <= PRECISION {
                     *x = 0.0;
                 }
-                });
             });
+        });
+
         if z.abs() < PRECISION {
             let art_in_base = variables
                 .iter()
@@ -852,6 +839,8 @@ fn two_phases(
             if art_in_base.count() > 0 {
                 return false;
             }
+
+            // Passage à la phase 2
             let column_vars_hashmap = hmap_vars
                 .par_iter()
                 .map(|(_, y)| {
@@ -861,6 +850,7 @@ fn two_phases(
                     )
                 })
                 .collect::<HashMap<_, _>>();
+
             for x in variables.iter_mut() {
                 let v = column_vars_hashmap.get(&x.column).unwrap();
                 let original_cost = *original_cost.get(&v.to_string()).unwrap();
@@ -875,25 +865,76 @@ fn two_phases(
                     variables,
                     &mut sorted_by_column,
                     &mut in_base,
+                    &mut base_variables, // Passage du nouveau tableau
                     false,
                     true,
                 );
+
                 matrix.par_iter_mut().for_each(|row| {
-                        row.iter_mut().for_each(|x| {
-                            if (*x).abs() <= PRECISION {
-                                *x = 0.0;
-                            }
-                        });
+                    row.iter_mut().for_each(|x| {
+                        if (*x).abs() <= PRECISION {
+                            *x = 0.0;
+                        }
                     });
+                });
+
                 if print {
                     print_system(matrix, variables, hmap_vars, true);
                 }
+
                 if ended {
                     return borned;
                 }
             }
         } else if all_positive {
             return false;
+        }
+    }
+}
+
+#[inline(always)]
+fn big_m(
+    matrix: &mut [Vec<f64>],
+    variables: &mut [Variable],
+    hmap_vars: &mut HashMap<String, usize>,
+    print: bool,
+    base_variables: &mut [usize],
+) -> bool {
+    let mut sorted_by_column = hmap_vars.values().copied().collect::<Vec<_>>();
+    sorted_by_column.sort_by(|a, b| variables[*a].column.cmp(&variables[*b].column));
+
+    let mut in_base = variables
+        .par_iter()
+        .filter(|x| x.in_base)
+        .map(|x| (x.ligne, x.cout_original))
+        .collect::<Vec<_>>();
+    in_base.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut in_base = in_base.iter().map(|x| x.1).collect::<Vec<_>>();
+
+    loop {
+        if print {
+            print_system(matrix, variables, hmap_vars, true);
+        }
+        
+        let (ended, borned) = update_array(
+            matrix,
+            variables,
+            &mut sorted_by_column,
+            &mut in_base,
+            base_variables,
+            false,
+            false,
+        );
+
+        if print {
+            print_system(matrix, variables, hmap_vars, true);
+        }
+        
+        if ended {
+            if print {
+                print_system(matrix, variables, hmap_vars, true);
+            }
+            return borned;
         }
     }
 }
