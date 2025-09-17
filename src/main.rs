@@ -66,7 +66,7 @@ fn branch_and_bound_cmd(lpfile: String) {
     let now = std::time::Instant::now();
     let (variables,_, z) = 
     match simplexef64::branch_and_bound(&lpfile) {
-        Ok((variables,  x, z)) => (variables, x, z),
+        Ok((variables,  x, z)) => (variables, z, x),
         Err(e) => {
             println!("❌ Failed to solve LP with error: {:?}", e);
             return;
@@ -78,7 +78,6 @@ fn branch_and_bound_cmd(lpfile: String) {
 
 fn simplexe_cmd(path: &str) {
     let now = std::time::Instant::now();
-    //let argv1 = "../warehouse100.lp";
     let file_string = std::fs::read_to_string(path).unwrap();
     let (mut matrix, mut variables, is_min, mut vars_hash_map, original_cost) = match simplexef64::parse_lp_two_phases(&file_string) {
         Ok((matrix, variables, is_min, vars_hash_map, original_cost, _)) => (matrix, variables, is_min, vars_hash_map, original_cost),
