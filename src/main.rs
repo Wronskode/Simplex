@@ -26,7 +26,7 @@ async fn server() {
 async fn simplexe(lpfile: String) -> impl IntoResponse {
     let (mut matrix, mut variables, mut hash_map_vars, is_min, original_cost) = 
     match simplexef64::parse_lp_two_phases(&lpfile) {
-        Ok((matrix, variables, is_min, hash_map_vars, original_cost)) => (matrix, variables, hash_map_vars, is_min, original_cost),
+        Ok((matrix, variables, is_min, hash_map_vars, original_cost, _)) => (matrix, variables, hash_map_vars, is_min, original_cost),
         Err(e) => {
             // println!("❌ Failed to parse LP file with error: {:?}", e);
             return (StatusCode::BAD_REQUEST, ("Failed to parse LP file ".to_string()+&e).into_response());
@@ -62,12 +62,26 @@ async fn branch_and_bound(lpfile: String) -> impl IntoResponse {
     (StatusCode::OK, Json((variables, z)).into_response())
 }
 
+fn branch_and_bound_cmd(lpfile: String) {
+    let now = std::time::Instant::now();
+    let (variables,_, z) = 
+    match simplexef64::branch_and_bound(&lpfile) {
+        Ok((variables,  x, z)) => (variables, x, z),
+        Err(e) => {
+            println!("❌ Failed to solve LP with error: {:?}", e);
+            return;
+        }
+    };
+    // let variables = variables.iter().map(|(a, b)| (a, b.to_f64())).collect::<Vec<_>>();
+    println!("{:?}\nz = {:?}\nTime taken: {:?}", variables, z, now.elapsed());
+}
+
 fn simplexe_cmd(path: &str) {
     let now = std::time::Instant::now();
     //let argv1 = "../warehouse100.lp";
     let file_string = std::fs::read_to_string(path).unwrap();
     let (mut matrix, mut variables, is_min, mut vars_hash_map, original_cost) = match simplexef64::parse_lp_two_phases(&file_string) {
-        Ok((matrix, variables, is_min, vars_hash_map, original_cost)) => (matrix, variables, is_min, vars_hash_map, original_cost),
+        Ok((matrix, variables, is_min, vars_hash_map, original_cost, _)) => (matrix, variables, is_min, vars_hash_map, original_cost),
         Err(e) => {
             println!("❌ Failed to parse LP file with error: {:?}", e);
             return;
@@ -92,7 +106,8 @@ fn main() {
                 server();
             }
             else {
-                simplexe_cmd(&path);
+                let file_content = std::fs::read_to_string(&path).unwrap();
+                branch_and_bound_cmd(file_content);
             }
         }
         None => {

@@ -38,10 +38,10 @@ pub fn solve_system_two_phases(
     original_cost: &HashMap<String, f64>,
     is_min: f64,
 ) -> Result<(Vec<(String, f64)>, f64), String> {
-    rayon::ThreadPoolBuilder::new()
-    .num_threads(4)
-    .build_global()
-    .unwrap();
+    // rayon::ThreadPoolBuilder::new()
+    // .num_threads(4)
+    // .build_global()
+    // .unwrap();
     two_phases(
         matrix,
         variables,
@@ -202,6 +202,7 @@ pub fn parse_lp_bigm(
                                     column: current_col,
                                     is_slack: false,
                                     is_artificial: false,
+                                    is_integer: false,
                                 });
                                 current_col += 1;
                             } else {
@@ -261,6 +262,7 @@ pub fn parse_lp_bigm(
                                             column: current_col,
                                             is_slack: false,
                                             is_artificial: false,
+                                            is_integer: false,
                                         });
                                         current_col += 1;
                                         current_col - 1
@@ -309,6 +311,7 @@ pub fn parse_lp_bigm(
                             column: slack_col,
                             is_slack: true,
                             is_artificial: false,
+                            is_integer: false,
                         });
                         current_row += 1;
                         count_slack += 1;
@@ -339,6 +342,7 @@ pub fn parse_lp_bigm(
                             column: slack_col,
                             is_slack: true,
                             is_artificial: false,
+                            is_integer: false,
                         });
                         count_slack += 1;
                         current_col += 1;
@@ -364,6 +368,7 @@ pub fn parse_lp_bigm(
                             column: art_col,
                             is_slack: false,
                             is_artificial: true,
+                            is_integer: false,
                         });
                         current_row += 1;
                         count_artificial += 1;
@@ -392,6 +397,7 @@ pub fn parse_lp_bigm(
                             column: art_col,
                             is_slack: false,
                             is_artificial: true,
+                            is_integer: false,
                         });
                         current_row += 1;
                         count_artificial += 1;
@@ -426,6 +432,7 @@ pub fn parse_lp_two_phases(
         f64,
         HashMap<String, usize>,
         HashMap<String, f64>,
+        bool,
     ),
     String,
 > {
@@ -444,6 +451,7 @@ pub fn parse_lp_two_phases(
     let mut current_row = 0;
     let mut var_list = vec![];
     let mut orignal_cost = HashMap::new();
+    let mut bnb = false;
     for line in file.into_inner() {
         match line.as_rule() {
             Rule::function => {
@@ -492,6 +500,7 @@ pub fn parse_lp_two_phases(
                                     column: current_col,
                                     is_slack: false,
                                     is_artificial: false,
+                                    is_integer: false,
                                 });
                                 orignal_cost.insert(var_name.to_string(), cost);
                                 current_col += 1;
@@ -546,6 +555,7 @@ pub fn parse_lp_two_phases(
                                             column: current_col,
                                             is_slack: false,
                                             is_artificial: false,
+                                            is_integer: false,
                                         });
                                         orignal_cost.insert(var_name.to_string(), 0.0);
                                         current_col += 1;
@@ -595,6 +605,7 @@ pub fn parse_lp_two_phases(
                             column: slack_col,
                             is_slack: true,
                             is_artificial: false,
+                            is_integer: false,
                         });
                         orignal_cost.insert(slack_name, 0.0);
                         current_row += 1;
@@ -626,6 +637,7 @@ pub fn parse_lp_two_phases(
                             column: slack_col,
                             is_slack: true,
                             is_artificial: false,
+                            is_integer: false,
                         });
                         orignal_cost.insert(slack_name, 0.0);
                         count_slack += 1;
@@ -644,6 +656,7 @@ pub fn parse_lp_two_phases(
                             column: art_col,
                             is_slack: false,
                             is_artificial: true,
+                            is_integer: false,
                         });
                         orignal_cost.insert(art_name, 0.0);
                         current_row += 1;
@@ -665,6 +678,7 @@ pub fn parse_lp_two_phases(
                             column: art_col,
                             is_slack: false,
                             is_artificial: true,
+                            is_integer: false,
                         });
                         orignal_cost.insert(art_name, 0.0);
                         current_row += 1;
@@ -675,6 +689,13 @@ pub fn parse_lp_two_phases(
                 }
                 row[0] = rhs;
                 matrix.push(row);
+            }
+            Rule::ilp => {
+                bnb = true;
+                let var_name = line.into_inner().next().unwrap().as_str().trim();
+                if let Some(var) = variables.get(var_name) {
+                    var_list[*var].is_integer = true;
+                }
             }
             _ => {
                 println!("Unknown rule: {:?}", line.as_rule());
@@ -687,7 +708,7 @@ pub fn parse_lp_two_phases(
             row.resize(max_len, 0.0);
         }
     }
-    Ok((matrix, var_list, is_min, variables, orignal_cost))
+    Ok((matrix, var_list, is_min, variables, orignal_cost, bnb))
 }
 
 
@@ -835,7 +856,7 @@ fn big_m(
 ) -> bool {
     let mut sorted_by_column = hmap_vars.values().copied().collect::<Vec<_>>();
     sorted_by_column.sort_by(|a, b| variables[*a].column.cmp(&variables[*b].column));
-    let mut compteur = 1;
+    // let mut compteur = 1;
     let mut in_base = variables
         .par_iter()
         .filter(|x| x.in_base)
@@ -856,10 +877,10 @@ fn big_m(
             false,
             false,
         );
-        let elapsed = now.elapsed();
-        if compteur % 1000 == 0 {
-            println!("Pivoting... {}\nelapsed : {:?}", compteur, elapsed);
-        }
+        // let elapsed = now.elapsed();
+        // if compteur % 1000 == 0 {
+        //     println!("Pivoting... {}\nelapsed : {:?}", compteur, elapsed);
+        // }
         if print {
             print_system(matrix, variables, hmap_vars, true);
         }
@@ -869,7 +890,7 @@ fn big_m(
             }
             return borned;
         }
-        compteur += 1;
+        // compteur += 1;
     }
 }
 
@@ -884,7 +905,7 @@ fn two_phases(
 ) -> bool {
     let mut sorted_by_column = hmap_vars.values().copied().collect::<Vec<_>>();
     sorted_by_column.sort_by(|a, b| variables[*a].column.cmp(&variables[*b].column));
-    let mut compteur = 1;
+    // let mut compteur = 1;
     let mut in_base = variables
         .par_iter()
         .filter(|x| x.in_base)
@@ -910,16 +931,23 @@ fn two_phases(
         }
         let z = get_objective(matrix, variables, is_min);
         let all_positive = s1 && s2;
-        if compteur % 10 == 0 {
-            println!("Pivoting (phase 1)... {}", compteur);
-            matrix.par_iter_mut().for_each(|row| {
+        matrix.par_iter_mut().for_each(|row| {
             row.iter_mut().for_each(|x| {
                 if (*x).abs() <= PRECISION {
                     *x = 0.0;
                 }
                 });
             });
-        }
+        // if compteur % 10 == 0 {
+        //     //println!("Pivoting (phase 1)... {}", compteur);
+        //     matrix.par_iter_mut().for_each(|row| {
+        //     row.iter_mut().for_each(|x| {
+        //         if (*x).abs() <= PRECISION {
+        //             *x = 0.0;
+        //         }
+        //         });
+        //     });
+        // }
         if z.abs() < PRECISION {
             let art_in_base = variables
                 .iter()
@@ -947,7 +975,7 @@ fn two_phases(
                 x.cout_original = original_cost;
             }
             loop {
-                compteur += 1;
+                // compteur += 1;
                 // let now = std::time::Instant::now();
                 let (ended, borned) = update_array(
                     matrix,
@@ -958,16 +986,23 @@ fn two_phases(
                     true,
                 );
                 // let elapsed = now.elapsed();
-                if compteur % 10 == 0 {
-                    println!("Pivoting (phase2)... {}", compteur);
-                    matrix.par_iter_mut().for_each(|row| {
+                matrix.par_iter_mut().for_each(|row| {
                         row.iter_mut().for_each(|x| {
                             if (*x).abs() <= PRECISION {
                                 *x = 0.0;
                             }
                         });
                     });
-                }
+                // if compteur % 10 == 0 {
+                //     //println!("Pivoting (phase2)... {}", compteur);
+                //     matrix.par_iter_mut().for_each(|row| {
+                //         row.iter_mut().for_each(|x| {
+                //             if (*x).abs() <= PRECISION {
+                //                 *x = 0.0;
+                //             }
+                //         });
+                //     });
+                // }
                 if print {
                     print_system(matrix, variables, hmap_vars, true);
                 }
@@ -978,7 +1013,7 @@ fn two_phases(
         } else if all_positive {
             return false;
         }
-        compteur += 1;
+        // compteur += 1;
     }
 }
 
@@ -1000,7 +1035,7 @@ impl Node {
     fn contains_constraint(&self, var: &str, op: &str, val: f64) -> bool {
         self.constraints
             .iter()
-            .any(|(v, o, value)| v == var && o == op && *value == val)
+            .any(|(v, o, value)| (v == var) && (o == op) && ((*value - val).abs() < PRECISION))
     }
 }
 
@@ -1010,67 +1045,85 @@ pub fn branch_and_bound(file: &str) -> Result<(Vec<(String, f64)>, f64, f64), St
         constraints: vec![],
     }];
 
-    let mut best_solution = None;
+    let mut best_solution: Option<(Vec<(String, f64)>, f64, f64)> = None;
 
     while let Some(node) = stack.pop() {
         let lp_str = node.to_lp_string();
-        let (mut matrix, mut variables, is_min, mut hash_map_vars) = match parse_lp_bigm(&lp_str) {
+        let (mut matrix, mut variables, is_min, mut vars_hash_map, mut orignal_cost, bnb) =
+            match parse_lp_two_phases(&lp_str) {
+                Ok(v) => v,
+                Err(e) =>  {println!("parse_lp_two_phases failed for:\n{}\nError: {:?}", lp_str, e);
+                continue},
+            };
+
+        let (vars_string, z) = match solve_system_two_phases(
+            &mut matrix,
+            &mut variables,
+            &mut vars_hash_map,
+            &orignal_cost,
+            is_min,
+        ) {
             Ok(v) => v,
             Err(_) => continue,
         };
-
-        let (vars_string, z) =
-            match solve_system(&mut matrix, &mut variables, &mut hash_map_vars, is_min) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-        let mut all_integer = true;
-        for (_, v) in &vars_string {
-            if (*v).fract() != 0.0 {
-                all_integer = false;
-                break;
+        if !bnb {
+            return Ok((vars_string, z, is_min));
+        }
+        if let Some((_, best_z, best_is_min)) = &best_solution {
+            // borne inférieure ou supérieure selon min/max
+            if (is_min * z) >= (best_is_min * *best_z) {
+                continue; // inutile d'explorer
             }
         }
-
+        // Vérifie si toutes les variables originales sont entières
+        let mut all_integer = true;
+        let mut most_fractional: Option<(String, f64)> = None;
+        let mut max_fractionality = 0.0;
+        for (name, v) in &vars_string {
+            if let Some(idx) = vars_hash_map.get(name) {
+            let var = &variables[*idx];
+            if !var.is_slack && !var.is_artificial && var.is_integer {
+                let frac = (v - v.round()).abs();
+                if frac > PRECISION && frac > max_fractionality {
+                all_integer = false;
+                max_fractionality = frac;
+                most_fractional = Some((name.clone(), *v));
+                }
+            }
+            }
+        }
         if all_integer {
             let is_better = match &best_solution {
                 None => true,
-                Some((_, _, best_z)) => {
-                    if (is_min + 1.0).abs() < PRECISION {
-                        z < *best_z
-                    } else {
-                        z > *best_z
-                    }
-                }
+                Some((_, best_z, best_is_min)) => (is_min * z) < (*best_is_min * *best_z),
             };
+
             if is_better {
-                best_solution = Some((vars_string, is_min, z));
+                best_solution = Some((vars_string, z, is_min));
             }
             continue;
         }
 
-        for (nom, v) in &vars_string {
-            let val = v;
-            if val.fract() != 0.0 {
-                let value_inf = val.floor();
-                let value_sup = val.ceil();
-                if !node.contains_constraint(nom, "<=", value_inf) {
-                    let mut constraints1 = node.constraints.clone();
-                    constraints1.push((nom.clone(), "<=".to_string(), value_inf));
-                    stack.push(Node {
-                        base_lp: node.base_lp.clone(),
-                        constraints: constraints1,
-                    });
-                }
-                if !node.contains_constraint(nom, ">=", value_sup) {
-                    let mut constraints2 = node.constraints.clone();
-                    constraints2.push((nom.clone(), ">=".to_string(), value_sup));
-                    stack.push(Node {
-                        base_lp: node.base_lp.clone(),
-                        constraints: constraints2,
-                    });
-                }
-                break;
+        // Brancher sur la première variable non entière
+        if let Some((nom, val)) = most_fractional {
+            let value_inf = val.floor();
+            let value_sup = val.ceil();
+
+            if !node.contains_constraint(&nom, "<=", value_inf) {
+                let mut constraints1 = node.constraints.clone();
+                constraints1.push((nom.clone(), "<=".to_string(), value_inf));
+                stack.push(Node {
+                    base_lp: node.base_lp.clone(),
+                    constraints: constraints1,
+                });
+            }
+            if !node.contains_constraint(&nom, ">=", value_sup) {
+                let mut constraints2 = node.constraints.clone();
+                constraints2.push((nom.clone(), ">=".to_string(), value_sup));
+                stack.push(Node {
+                    base_lp: node.base_lp.clone(),
+                    constraints: constraints2,
+                });
             }
         }
     }
@@ -1080,6 +1133,7 @@ pub fn branch_and_bound(file: &str) -> Result<(Vec<(String, f64)>, f64, f64), St
         None => Err("Pas de solution entière".to_string()),
     }
 }
+
 
 fn print_system(
     matrix: &[Vec<f64>],
@@ -1168,4 +1222,5 @@ pub struct Variable {
     column: usize,
     is_slack: bool,
     is_artificial: bool,
+    is_integer: bool,
 }

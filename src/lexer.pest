@@ -10,8 +10,9 @@ geq = {">="}
 leq = {"<="}
 eq = {"="}
 semicolon = {";"}
+ilp = { "int" ~ varname~semicolon}
 char = { ASCII_ALPHA | "_" }
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
 function = { obj ~ ":" ~ (coeff ~ varname)+~semicolon}
 constraint = { (coeff~varname)* ~ (geq | leq | eq) ~ number ~ semicolon }
-program = { function ~ constraint+ ~ (!constraint ~ ANY)* ~ constraint* }
+program    =  { function ~ constraint* ~ ilp* ~ constraint* }
