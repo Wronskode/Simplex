@@ -46,11 +46,11 @@ def run_simplexe_nqueens(n_start, n_end):
     print("Mesures terminées.")
     return n_values, execution_times
 
-def plot_performance_curve(n_values, times):
+def plot_performance_curve(n_values, times, nend):
     plt.style.use('ggplot') 
     plt.figure(figsize=(10, 6))
     plt.plot(n_values, times, marker='o', linestyle='-', color='b')
-    plt.title("Temps d'exécution du branch and bound pour le problème des n-reines (8 ≤ n ≤ 25)")
+    plt.title(f"Temps d'exécution du branch and bound pour le problème des n-reines (8 ≤ n ≤ {nend})")
     plt.xlabel("Nombre de Reines (n)")
     plt.ylabel("Temps d'exécution (secondes)")
     
@@ -69,4 +69,4 @@ if __name__ == "__main__":
     n_values, times = run_simplexe_nqueens(n_start, n_end)
 
     if n_values and times:
-        plot_performance_curve(n_values, times)
+        plot_performance_curve(n_values, times, n_end)
