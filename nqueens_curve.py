@@ -19,16 +19,16 @@ def run_simplexe_nqueens(n_start, n_end):
             start_time = time.time()
             timout = False
             try:
-                subprocess.run(command, check=True, capture_output=True, text=True, timeout=60)
+                subprocess.run(command, check=True, capture_output=True, text=True, timeout=70)
             except subprocess.TimeoutExpired:
-                print(" DÉLAI D'ATTENTE DÉPASSÉ (60 secondes).")
+                print(" DÉLAI D'ATTENTE DÉPASSÉ (70 secondes).")
                 timout = True
             end_time = time.time()
             elapsed_time = end_time - start_time
             
             n_values.append(n)
             if timout:
-                execution_times.append(60.0)
+                execution_times.append(70.0)
             else:
                 execution_times.append(elapsed_time)
             
@@ -64,7 +64,7 @@ def plot_performance_curve(n_values, times, nend):
 
 if __name__ == "__main__":
     n_start = 8
-    n_end = 30
+    n_end = 40
     
     n_values, times = run_simplexe_nqueens(n_start, n_end)
 
