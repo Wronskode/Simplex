@@ -24,9 +24,9 @@ async fn server() {
 }
 
 async fn simplexe(lpfile: String) -> impl IntoResponse {
-    let (mut matrix, mut variables, mut hash_map_vars, is_min, original_cost) = 
+    let (mut matrix, mut variables, mut hash_map_vars, is_min) = 
     match simplexef64::parse_lp_two_phases(&lpfile) {
-        Ok((matrix, variables, is_min, hash_map_vars, original_cost, _)) => (matrix, variables, hash_map_vars, is_min, original_cost),
+        Ok((matrix, variables, is_min, hash_map_vars, _)) => (matrix, variables, hash_map_vars, is_min),
         Err(e) => {
             // println!("❌ Failed to parse LP file with error: {:?}", e);
             return (StatusCode::BAD_REQUEST, ("Failed to parse LP file ".to_string()+&e).into_response());
@@ -34,7 +34,7 @@ async fn simplexe(lpfile: String) -> impl IntoResponse {
     };
     //println!("Parsed LP file successfully");
     let (variables,z) = 
-    match simplexef64::solve_system_two_phases(&mut matrix, &mut variables, &mut hash_map_vars, &original_cost, is_min) {
+    match simplexef64::solve_system_two_phases(&mut matrix, &mut variables, &mut hash_map_vars, is_min) {
         Ok((variables,  z)) => (variables, z),
         Err(e) => {
             // println!("❌ Failed to solve LP with error: {:?}", e);
@@ -50,9 +50,9 @@ async fn simplexe(lpfile: String) -> impl IntoResponse {
 }
 
 async fn branch_and_bound(lpfile: String) -> impl IntoResponse {
-    let (variables,_, z) = 
+    let (variables,z) = 
     match simplexef64::branch_and_bound(&lpfile) {
-        Ok((variables,  x, z)) => (variables, x, z),
+        Ok((variables, z)) => (variables, z),
         Err(e) => {
             // println!("❌ Failed to solve LP with error: {:?}", e);
             return (StatusCode::INTERNAL_SERVER_ERROR, e.into_response());
@@ -64,30 +64,37 @@ async fn branch_and_bound(lpfile: String) -> impl IntoResponse {
 
 fn branch_and_bound_cmd(lpfile: String) {
     let now = std::time::Instant::now();
-    let (variables,_, z) = 
+    let (variables, z) = 
     match simplexef64::branch_and_bound(&lpfile) {
-        Ok((variables,  x, z)) => (variables, z, x),
+        Ok((variables, z)) => (variables, z),
         Err(e) => {
             println!("❌ Failed to solve LP with error: {:?}", e);
             return;
         }
     };
     // let variables = variables.iter().map(|(a, b)| (a, b.to_f64())).collect::<Vec<_>>();
-    println!("{:?}\nz = {:?}\nTime taken: {:?}", variables, z, now.elapsed());
+    // println!("{:?}\nz = {:?}\nTime taken: {:?}", variables, z, now.elapsed());
+    let max_var_len = variables.iter().map(|(var, _)| var.len()).max().unwrap_or(0);
+    println!("Actual values of the variables:");
+    for (var, val) in variables {
+        println!("{:width$} = {}", var, val, width = max_var_len);
+    }
+    println!("Value of objective function: {z}",);
+    println!("Time taken: {:?}", now.elapsed());
 }
 
 fn simplexe_cmd(path: &str) {
     let now = std::time::Instant::now();
     let file_string = std::fs::read_to_string(path).unwrap();
-    let (mut matrix, mut variables, is_min, mut vars_hash_map, original_cost) = match simplexef64::parse_lp_two_phases(&file_string) {
-        Ok((matrix, variables, is_min, vars_hash_map, original_cost, _)) => (matrix, variables, is_min, vars_hash_map, original_cost),
+    let (mut matrix, mut variables, is_min, mut vars_hash_map) = match simplexef64::parse_lp_two_phases(&file_string) {
+        Ok((matrix, variables, is_min, vars_hash_map, _)) => (matrix, variables, is_min, vars_hash_map),
         Err(e) => {
             println!("❌ Failed to parse LP file with error: {:?}", e);
             return;
         }
     };
     let (variables,z) = 
-    match simplexef64::solve_system_two_phases(&mut matrix, &mut variables, &mut vars_hash_map, &original_cost, is_min) {
+    match simplexef64::solve_system_two_phases(&mut matrix, &mut variables, &mut vars_hash_map, is_min) {
         Ok((variables,  z)) => (variables, z),
         Err(e) => {
             println!("❌ Failed to solve LP with error: {:?}", e);

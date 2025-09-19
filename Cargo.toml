@@ -7,6 +7,7 @@ edition = "2024"
 axum = "0.8.3"
 pest = "2.8.0"
 pest_derive = "2.8.0"
+rand = "0.9.2"
 rayon = "1.10.0"
 rug = "1.27.0"
 serde = {version = "1.0.219", features = ["derive"]}

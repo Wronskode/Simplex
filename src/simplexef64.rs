@@ -3,27 +3,26 @@ use pest_derive::Parser;
 use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[grammar = "lexer.pest"]
 pub struct LPParser;
 const PRECISION: f64 = 1.0e-6;
+const BIGM: f64 = 1.0e12;
 
 #[inline(always)]
 fn get_solution(
     matrix: &[Vec<f64>],
     variables: &[Variable],
-    vars_hash_map: &HashMap<String, usize>,
+    variables_map: &HashMap<String, usize>,
     is_min: f64,
 ) -> Result<(Vec<(String, f64)>, f64), String> {
     let mut vars_string = Vec::with_capacity(variables.len());
     let mut z = 0.0;
-    for (index, var) in variables.iter().enumerate() {
-        if var.is_slack || var.is_artificial {
-            continue;
-        }
+    for (index, var) in variables.iter().enumerate().filter(|(_, v)| !v.is_slack && !v.is_artificial) {
         vars_string.push((
-            vars_hash_map
+            variables_map
                 .iter()
                 .find(|(_, y)| **y == index)
                 .unwrap()
@@ -36,7 +35,7 @@ fn get_solution(
             },
         ));
         if var.in_base {
-            z += var.cout_original * matrix[var.ligne][0];
+            z += var.current_cost * matrix[var.ligne][0];
         }
     }
     let z = is_min * z;
@@ -48,7 +47,7 @@ fn get_objective(matrix: &[Vec<f64>], variables: &[Variable], is_min: f64) -> f6
     let mut z = 0.0;
     for var in variables.iter() {
         if var.in_base {
-            z += var.cout_original * matrix[var.ligne][0];
+            z += var.current_cost * matrix[var.ligne][0];
         }
     }
     z * is_min
@@ -100,9 +99,9 @@ pub fn parse_lp_bigm(
     let mut count_slack = 0;
     let mut count_artificial = 0;
     let mut current_col = 1;
-    let mut is_min = 1.0;
+    let mut is_min = 1.0; // 1.0 for max, -1.0 for min
     let mut current_row = 0;
-    let mut var_list = vec![];
+    let mut variables_list = vec![];
     let mut bnb = false;
     for line in file.into_inner() {
         match line.as_rule() {
@@ -112,7 +111,7 @@ pub fn parse_lp_bigm(
                     match token.as_rule() {
                         Rule::obj => {
                             if token.as_str() == "min" {
-                                is_min = -1.0;
+                                is_min = -1.0; // if minimization, multiply costs by -1
                             }
                         }
                         Rule::coeff => {
@@ -136,20 +135,21 @@ pub fn parse_lp_bigm(
                         Rule::varname => {
                             let var_name = token.as_str().trim();
                             if !variables.contains_key(var_name) {
-                                variables.insert(var_name.to_string(), var_list.len());
-                                var_list.push(Variable {
+                                variables.insert(var_name.to_string(), variables_list.len());
+                                variables_list.push(Variable {
                                     in_base: false,
-                                    cout_original: cost,
+                                    current_cost: cost,
                                     ligne: usize::MAX,
                                     column: current_col,
                                     is_slack: false,
                                     is_artificial: false,
                                     is_integer: false,
+                                    original_cost: cost,
                                 });
                                 current_col += 1;
                             } else {
                                 let var = variables.get_mut(var_name).unwrap();
-                                var_list[*var].cout_original += cost;
+                                variables_list[*var].current_cost += cost;
                             }
                         }
                         _ => {}
@@ -182,28 +182,27 @@ pub fn parse_lp_bigm(
                                 coeff_str = "1";
                             }
                             let coeff = coeff_str.parse::<f64>().unwrap() * sign;
-                            if let Some(var_token) = tokens.next() {
-                                if var_token.as_rule() == Rule::varname {
+                            if let Some(var_token) = tokens.next() &&var_token.as_rule() == Rule::varname {
                                     let var_name = var_token.as_str().trim();
                                     let column = if let Some(var) = variables.get(var_name) {
-                                        var_list[*var].column
+                                        variables_list[*var].column
                                     } else {
-                                        variables.insert(var_name.to_string(), var_list.len());
-                                        var_list.push(Variable {
+                                        variables.insert(var_name.to_string(), variables_list.len());
+                                        variables_list.push(Variable {
                                             in_base: false,
-                                            cout_original: 0.0,
+                                            current_cost: 0.0,
                                             ligne: usize::MAX,
                                             column: current_col,
                                             is_slack: false,
                                             is_artificial: false,
                                             is_integer: false,
+                                            original_cost: 0.0,
                                         });
                                         current_col += 1;
                                         current_col - 1
                                     };
                                     constraint_vars.push((column, coeff));
                                 }
-                            }
                         }
                         Rule::leq | Rule::geq | Rule::eq => {
                             relation = Some(token.as_rule());
@@ -229,15 +228,16 @@ pub fn parse_lp_bigm(
                             row.resize(slack_col + 1, 0.0);
                         }
                         row[slack_col] = 1.0;
-                        variables.insert(slack_name, var_list.len());
-                        var_list.push(Variable {
+                        variables.insert(slack_name, variables_list.len());
+                        variables_list.push(Variable {
                             in_base: true,
-                            cout_original: 0.0,
+                            current_cost: 0.0,
                             ligne: current_row,
                             column: slack_col,
                             is_slack: true,
                             is_artificial: false,
                             is_integer: false,
+                            original_cost: 0.0,
                         });
                         current_row += 1;
                         count_slack += 1;
@@ -252,15 +252,16 @@ pub fn parse_lp_bigm(
                             row.resize(slack_col + 1, 0.0);
                         }
                         row[slack_col] = -1.0;
-                        variables.insert(slack_name, var_list.len());
-                        var_list.push(Variable {
+                        variables.insert(slack_name, variables_list.len());
+                        variables_list.push(Variable {
                             in_base: false,
-                            cout_original: 0.0,
+                            current_cost: 0.0,
                             ligne: usize::MAX,
                             column: slack_col,
                             is_slack: true,
                             is_artificial: false,
                             is_integer: false,
+                            original_cost: 0.0,
                         });
                         count_slack += 1;
                         current_col += 1;
@@ -270,15 +271,16 @@ pub fn parse_lp_bigm(
                             row.resize(art_col + 1, 0.0);
                         }
                         row[art_col] = 1.0;
-                        variables.insert(art_name, var_list.len());
-                        var_list.push(Variable {
+                        variables.insert(art_name, variables_list.len());
+                        variables_list.push(Variable {
                             in_base: true,
-                            cout_original: -1.0e12,
+                            current_cost: -BIGM,
                             ligne: current_row,
                             column: art_col,
                             is_slack: false,
                             is_artificial: true,
                             is_integer: false,
+                            original_cost: 0.0,
                         });
                         current_row += 1;
                         count_artificial += 1;
@@ -291,15 +293,16 @@ pub fn parse_lp_bigm(
                             row.resize(art_col + 1, 0.0);
                         }
                         row[art_col] = 1.0;
-                        variables.insert(art_name, var_list.len());
-                        var_list.push(Variable {
+                        variables.insert(art_name, variables_list.len());
+                        variables_list.push(Variable {
                             in_base: true,
-                            cout_original: -1.0e12,
+                            current_cost: -BIGM,
                             ligne: current_row,
                             column: art_col,
                             is_slack: false,
                             is_artificial: true,
                             is_integer: false,
+                            original_cost: 0.0,
                         });
                         current_row += 1;
                         count_artificial += 1;
@@ -314,7 +317,7 @@ pub fn parse_lp_bigm(
                 bnb = true;
                 let var_name = line.into_inner().next().unwrap().as_str().trim();
                 if let Some(var) = variables.get(var_name) {
-                    var_list[*var].is_integer = true;
+                    variables_list[*var].is_integer = true;
                 }
             }
             _ => {
@@ -328,7 +331,7 @@ pub fn parse_lp_bigm(
             row.resize(max_len, 0.0);
         }
     }
-    Ok((matrix, var_list, is_min, variables, bnb))
+    Ok((matrix, variables_list, is_min, variables, bnb))
 }
 
 #[inline(always)]
@@ -340,7 +343,6 @@ pub fn parse_lp_two_phases(
         Vec<Variable>,
         f64,
         HashMap<String, usize>,
-        HashMap<String, f64>,
         bool,
     ),
     String,
@@ -352,14 +354,13 @@ pub fn parse_lp_two_phases(
         }
     };
     let mut matrix = vec![];
-    let mut variables = HashMap::new();
+    let mut variables_map = HashMap::new();
     let mut count_slack = 0;
     let mut count_artificial = 0;
     let mut current_col = 1;
-    let mut is_min = 1.0;
+    let mut is_min = 1.0; // 1.0 for max, -1.0 for min
     let mut current_row = 0;
-    let mut var_list = vec![];
-    let mut orignal_cost = HashMap::new();
+    let mut variables_list = vec![];
     let mut bnb = false;
     for line in file.into_inner() {
         match line.as_rule() {
@@ -369,7 +370,7 @@ pub fn parse_lp_two_phases(
                     match token.as_rule() {
                         Rule::obj => {
                             if token.as_str() == "min" {
-                                is_min = -1.0;
+                                is_min = -1.0; // if minimization, multiply costs by -1
                             }
                         }
                         Rule::coeff => {
@@ -392,24 +393,22 @@ pub fn parse_lp_two_phases(
                         }
                         Rule::varname => {
                             let var_name = token.as_str().trim();
-                            if !variables.contains_key(var_name) {
-                                variables.insert(var_name.to_string(), var_list.len());
-                                var_list.push(Variable {
+                            if !variables_map.contains_key(var_name) {
+                                variables_map.insert(var_name.to_string(), variables_list.len());
+                                variables_list.push(Variable {
                                     in_base: false,
-                                    cout_original: 0.0,
+                                    current_cost: 0.0,
                                     ligne: usize::MAX,
                                     column: current_col,
                                     is_slack: false,
                                     is_artificial: false,
                                     is_integer: false,
+                                    original_cost: cost,
                                 });
-                                orignal_cost.insert(var_name.to_string(), cost);
                                 current_col += 1;
                             } else {
-                                let var = variables.get_mut(var_name).unwrap();
-                                var_list[*var].cout_original += cost;
-                                orignal_cost
-                                    .insert(var_name.to_string(), var_list[*var].cout_original);
+                                let var = variables_map.get_mut(var_name).unwrap();
+                                variables_list[*var].current_cost += cost;
                             }
                         }
                         _ => {}
@@ -419,9 +418,8 @@ pub fn parse_lp_two_phases(
 
             Rule::constraint => {
                 let mut constraint_vars: Vec<(usize, f64)> = vec![];
-                let mut rhs = 0.0;
+                let mut b_vector = 0.0;
                 let mut relation: Option<Rule> = None;
-
                 let mut tokens = line.into_inner().peekable();
                 while let Some(token) = tokens.next() {
                     match token.as_rule() {
@@ -442,35 +440,34 @@ pub fn parse_lp_two_phases(
                                 coeff_str = "1";
                             }
                             let coeff = coeff_str.parse::<f64>().unwrap() * sign;
-                            if let Some(var_token) = tokens.next() {
-                                if var_token.as_rule() == Rule::varname {
+                            if let Some(var_token) = tokens.next()
+                                && var_token.as_rule() == Rule::varname {
                                     let var_name = var_token.as_str().trim();
-                                    let column = if let Some(var) = variables.get(var_name) {
-                                        var_list[*var].column
+                                    let column = if let Some(var) = variables_map.get(var_name) {
+                                        variables_list[*var].column
                                     } else {
-                                        variables.insert(var_name.to_string(), var_list.len());
-                                        var_list.push(Variable {
+                                        variables_map.insert(var_name.to_string(), variables_list.len());
+                                        variables_list.push(Variable {
                                             in_base: false,
-                                            cout_original: 0.0,
+                                            current_cost: 0.0,
                                             ligne: usize::MAX,
                                             column: current_col,
                                             is_slack: false,
                                             is_artificial: false,
                                             is_integer: false,
+                                            original_cost: 0.0,
                                         });
-                                        orignal_cost.insert(var_name.to_string(), 0.0);
                                         current_col += 1;
                                         current_col - 1
                                     };
                                     constraint_vars.push((column, coeff));
                                 }
-                            }
                         }
                         Rule::leq | Rule::geq | Rule::eq => {
                             relation = Some(token.as_rule());
                         }
                         Rule::number => {
-                            rhs = token.as_str().parse::<f64>().unwrap();
+                            b_vector = token.as_str().parse::<f64>().unwrap();
                         }
                         _ => {}
                     }
@@ -490,17 +487,17 @@ pub fn parse_lp_two_phases(
                             row.resize(slack_col + 1, 0.0);
                         }
                         row[slack_col] = 1.0;
-                        variables.insert(slack_name.to_string(), var_list.len());
-                        var_list.push(Variable {
+                        variables_map.insert(slack_name.to_string(), variables_list.len());
+                        variables_list.push(Variable {
                             in_base: true,
-                            cout_original: 0.0,
+                            current_cost: 0.0,
                             ligne: current_row,
                             column: slack_col,
                             is_slack: true,
                             is_artificial: false,
                             is_integer: false,
+                            original_cost: 0.0,
                         });
-                        orignal_cost.insert(slack_name, 0.0);
                         current_row += 1;
                         count_slack += 1;
                         current_col += 1;
@@ -514,17 +511,17 @@ pub fn parse_lp_two_phases(
                             row.resize(slack_col + 1, 0.0);
                         }
                         row[slack_col] = -1.0;
-                        variables.insert(slack_name.to_string(), var_list.len());
-                        var_list.push(Variable {
+                        variables_map.insert(slack_name.to_string(), variables_list.len());
+                        variables_list.push(Variable {
                             in_base: false,
-                            cout_original: 0.0,
+                            current_cost: 0.0,
                             ligne: usize::MAX,
                             column: slack_col,
                             is_slack: true,
                             is_artificial: false,
                             is_integer: false,
+                            original_cost: 0.0,
                         });
-                        orignal_cost.insert(slack_name, 0.0);
                         count_slack += 1;
                         current_col += 1;
 
@@ -533,17 +530,17 @@ pub fn parse_lp_two_phases(
                             row.resize(art_col + 1, 0.0);
                         }
                         row[art_col] = 1.0;
-                        variables.insert(art_name.to_string(), var_list.len());
-                        var_list.push(Variable {
+                        variables_map.insert(art_name.to_string(), variables_list.len());
+                        variables_list.push(Variable {
                             in_base: true,
-                            cout_original: -1.0,
+                            current_cost: -1.0,
                             ligne: current_row,
                             column: art_col,
                             is_slack: false,
                             is_artificial: true,
                             is_integer: false,
+                            original_cost: 0.0,
                         });
-                        orignal_cost.insert(art_name, 0.0);
                         current_row += 1;
                         count_artificial += 1;
                         current_col += 1;
@@ -555,31 +552,31 @@ pub fn parse_lp_two_phases(
                             row.resize(art_col + 1, 0.0);
                         }
                         row[art_col] = 1.0;
-                        variables.insert(art_name.to_string(), var_list.len());
-                        var_list.push(Variable {
+                        variables_map.insert(art_name.to_string(), variables_list.len());
+                        variables_list.push(Variable {
                             in_base: true,
-                            cout_original: -1.0,
+                            current_cost: -1.0,
                             ligne: current_row,
                             column: art_col,
                             is_slack: false,
                             is_artificial: true,
                             is_integer: false,
+                            original_cost: 0.0,
                         });
-                        orignal_cost.insert(art_name, 0.0);
                         current_row += 1;
                         count_artificial += 1;
                         current_col += 1;
                     }
                     _ => {}
                 }
-                row[0] = rhs;
+                row[0] = b_vector;
                 matrix.push(row);
             }
             Rule::ilp => {
                 bnb = true;
                 let var_name = line.into_inner().next().unwrap().as_str().trim();
-                if let Some(var) = variables.get(var_name) {
-                    var_list[*var].is_integer = true;
+                if let Some(var) = variables_map.get(var_name) {
+                    variables_list[*var].is_integer = true;
                 }
             }
             _ => {
@@ -593,7 +590,7 @@ pub fn parse_lp_two_phases(
             row.resize(max_len, 0.0);
         }
     }
-    Ok((matrix, var_list, is_min, variables, orignal_cost, bnb))
+    Ok((matrix, variables_list, is_min, variables_map, bnb))
 }
 
 // Simplex iteration
@@ -614,7 +611,7 @@ fn update_array(
         .map(|(i, _)| {
             let y = variables[sorted_by_column[i]];
             if !y.in_base && (!in_phase_two || !y.is_artificial) {
-                Some((i + 1, scalar_product_column(in_base, matrix, i + 1) - y.cout_original))
+                Some((i + 1, scalar_product_column(in_base, matrix, i + 1) - y.current_cost))
             } else {
                 None
             }
@@ -630,11 +627,11 @@ fn update_array(
     let mut min = f64::MAX;
     let mut line_index = 0;
     let mut leaved = false;
-    for (i, item) in matrix.iter().enumerate() {
-        if item[min_col_index] <= 0.0 {
+    for (i, row) in matrix.iter().enumerate() {
+        if row[min_col_index] <= 0.0 {
             continue;
         }
-        let scalar = item[0] / item[min_col_index];
+        let scalar = row[0] / row[min_col_index];
         if in_phase_one
             && (scalar - min).abs() < PRECISION
             && variables[base_variables[i]].is_artificial
@@ -659,7 +656,7 @@ fn update_array(
     let new_base_var_index = sorted_by_column[min_col_index - 1];
     variables[new_base_var_index].in_base = true;
     variables[new_base_var_index].ligne = line_index;
-    in_base[line_index] = variables[new_base_var_index].cout_original;
+    in_base[line_index] = variables[new_base_var_index].current_cost;
     base_variables[line_index] = new_base_var_index;
 
     let pivot = matrix[line_index][min_col_index];
@@ -682,37 +679,18 @@ fn update_array(
     (false, true)
 }
 
-// fn scalar_product(x: &[f64], y: &[f64]) -> f64 {
-//     let mut z = 0.0;
-//     for i in 0..x.len() {
-//         z += x[i]*y[i];
-//     }
-//     z
-// }
-
-// #[inline(always)]
-// fn scalar_product_column(x: &[f64], matrix: &[Vec<f64>], j: usize) -> f64 {
-//     let mut sum = 0.0;
-//     x.iter()
-//         .enumerate()
-//         .filter(|(i, xi)| **xi != 0.0 && matrix[*i][j] != 0.0)
-//         .for_each(|(i, xi)| {
-//             sum += xi * matrix[i][j];
-//         });
-//     sum
-// }
-
 #[inline(always)]
 fn scalar_product(x: &[f64], y: &[f64]) -> f64 {
-    x.par_iter()
-        .zip(y.par_iter())
+    x.iter()
+        .zip(y.iter())
         .filter(|(xi, yi)| (**xi).abs() > PRECISION  && (**yi).abs() > PRECISION )
         .map(|(xi, yi)| xi * yi)
         .sum()
 }
 
+#[inline(always)]
 fn scalar_product_column(x: &[f64], matrix: &[Vec<f64>], j: usize) -> f64 {
-    x.par_iter()
+    x.iter()
         .enumerate()
         .filter(|(i, xi)| (**xi).abs() > PRECISION && matrix[*i][j].abs() > PRECISION)
         .map(|(i, &xi)| xi * matrix[i][j])
@@ -722,16 +700,13 @@ fn scalar_product_column(x: &[f64], matrix: &[Vec<f64>], j: usize) -> f64 {
 pub fn solve_system_two_phases(
     matrix: &mut [Vec<f64>],
     variables: &mut [Variable],
-    vars_hash_map: &mut HashMap<String, usize>,
-    original_cost: &HashMap<String, f64>,
+    variables_map: &mut HashMap<String, usize>,
     is_min: f64,
 ) -> Result<(Vec<(String, f64)>, f64), String> {
     let solved = two_phases(
         matrix,
         variables,
-        vars_hash_map,
-        original_cost,
-        false,
+        variables_map,
         is_min,
     );
 
@@ -744,14 +719,14 @@ pub fn solve_system_two_phases(
         return Err("Le problème est infaisable".to_string());
     }
     
-    get_solution(matrix, variables, vars_hash_map, is_min)
+    get_solution(matrix, variables, variables_map, is_min)
 }
 
 #[inline(always)]
 pub fn solve_system_bigm(
     matrix: &mut [Vec<f64>],
     variables: &mut [Variable],
-    vars_hash_map: &mut HashMap<String, usize>,
+    variables_map: &mut HashMap<String, usize>,
     is_min: f64,
 ) -> Result<(Vec<(String, f64)>, f64), String> {
     let mut base_variables = vec![0; matrix.len()];
@@ -761,7 +736,7 @@ pub fn solve_system_bigm(
         }
     }
 
-    let borned = big_m(matrix, variables, vars_hash_map, false, &mut base_variables);
+    let borned = big_m(matrix, variables, variables_map, &mut base_variables);
     
     if !borned {
         return Err("Le problème est non borné".to_string());
@@ -772,7 +747,7 @@ pub fn solve_system_bigm(
         return Err("Le problème est infaisable".to_string());
     }
     
-    get_solution(matrix, variables, vars_hash_map, is_min)
+    get_solution(matrix, variables, variables_map, is_min)
 }
 
 #[inline(always)]
@@ -780,8 +755,6 @@ fn two_phases(
     matrix: &mut [Vec<f64>],
     variables: &mut [Variable],
     hmap_vars: &mut HashMap<String, usize>,
-    original_cost: &HashMap<String, f64>,
-    print: bool,
     is_min: f64,
 ) -> bool {
     let mut base_variables = vec![0; matrix.len()];
@@ -797,15 +770,10 @@ fn two_phases(
     let mut in_base = variables
         .par_iter()
         .filter(|x| x.in_base)
-        .map(|x| (x.ligne, x.cout_original))
+        .map(|x| (x.ligne, x.current_cost))
         .collect::<Vec<_>>();
     in_base.sort_by(|a, b| a.0.cmp(&b.0));
     let mut in_base = in_base.iter().map(|x| x.1).collect::<Vec<_>>();
-
-    if print {
-        print_system(matrix, variables, hmap_vars, true);
-    }
-
     // Phase 1 : minimisation des variables artificielles
     loop {
         let (s1, s2) = update_array(
@@ -817,11 +785,6 @@ fn two_phases(
             true,
             false,
         );
-
-        if print {
-            print_system(matrix, variables, hmap_vars, true);
-        }
-
         let z = get_objective(matrix, variables, is_min);
         let all_positive = s1 && s2;
         matrix.par_iter_mut().for_each(|row| {
@@ -834,30 +797,19 @@ fn two_phases(
 
         if z.abs() < PRECISION {
             let art_in_base = variables
-                .iter()
+                .par_iter()
                 .filter(|x| x.in_base && x.is_artificial && matrix[x.ligne][0].abs() > PRECISION);
             if art_in_base.count() > 0 {
                 return false;
             }
 
             // Passage à la phase 2
-            let column_vars_hashmap = hmap_vars
-                .par_iter()
-                .map(|(_, y)| {
-                    (
-                        variables[*y].column,
-                        hmap_vars.iter().find(|(_, z)| **z == *y).unwrap().0,
-                    )
-                })
-                .collect::<HashMap<_, _>>();
-
             for x in variables.iter_mut() {
-                let v = column_vars_hashmap.get(&x.column).unwrap();
-                let original_cost = *original_cost.get(&v.to_string()).unwrap();
+                let original_cost = x.original_cost;
                 if x.in_base {
                     in_base[x.ligne] = original_cost;
                 }
-                x.cout_original = original_cost;
+                x.current_cost = original_cost;
             }
             loop {
                 let (ended, borned) = update_array(
@@ -865,7 +817,7 @@ fn two_phases(
                     variables,
                     &mut sorted_by_column,
                     &mut in_base,
-                    &mut base_variables, // Passage du nouveau tableau
+                    &mut base_variables,
                     false,
                     true,
                 );
@@ -877,11 +829,6 @@ fn two_phases(
                         }
                     });
                 });
-
-                if print {
-                    print_system(matrix, variables, hmap_vars, true);
-                }
-
                 if ended {
                     return borned;
                 }
@@ -897,7 +844,6 @@ fn big_m(
     matrix: &mut [Vec<f64>],
     variables: &mut [Variable],
     hmap_vars: &mut HashMap<String, usize>,
-    print: bool,
     base_variables: &mut [usize],
 ) -> bool {
     let mut sorted_by_column = hmap_vars.values().copied().collect::<Vec<_>>();
@@ -906,16 +852,12 @@ fn big_m(
     let mut in_base = variables
         .par_iter()
         .filter(|x| x.in_base)
-        .map(|x| (x.ligne, x.cout_original))
+        .map(|x| (x.ligne, x.current_cost))
         .collect::<Vec<_>>();
     in_base.sort_by(|a, b| a.0.cmp(&b.0));
     let mut in_base = in_base.iter().map(|x| x.1).collect::<Vec<_>>();
 
-    loop {
-        if print {
-            print_system(matrix, variables, hmap_vars, true);
-        }
-        
+    loop {        
         let (ended, borned) = update_array(
             matrix,
             variables,
@@ -925,22 +867,14 @@ fn big_m(
             false,
             false,
         );
-
-        if print {
-            print_system(matrix, variables, hmap_vars, true);
-        }
-        
         if ended {
-            if print {
-                print_system(matrix, variables, hmap_vars, true);
-            }
             return borned;
         }
     }
 }
 #[derive(Clone)]
 struct Node {
-    base_lp: String,
+    base_lp: Arc<String>,
     constraints: Vec<(String, String, f64)>,
 }
 
@@ -955,9 +889,9 @@ impl Node {
     }
 }
 
-fn is_integer_solution(vars_string: &Vec<(String, f64)>, vars_hash_map: &std::collections::HashMap<String, usize>, variables: &Vec<Variable>) -> bool {
+fn is_integer_solution(vars_string: &[(String, f64)], variables_map: &HashMap<String, usize>, variables: &[Variable]) -> bool {
     for (name, v) in vars_string {
-        if let Some(idx) = vars_hash_map.get(name) {
+        if let Some(idx) = variables_map.get(name) {
             let var = &variables[*idx];
             if !var.is_slack && !var.is_artificial && var.is_integer && (v - v.round()).abs() > PRECISION {
                 return false;
@@ -967,27 +901,25 @@ fn is_integer_solution(vars_string: &Vec<(String, f64)>, vars_hash_map: &std::co
     true
 }
 
-fn update_best_solution(best_solution: &mut Option<(Vec<(String, f64)>, f64)>, vars_string: &Vec<(String, f64)>, z: f64, is_min: f64) {
+fn update_best_solution(best_solution: &mut Option<(Vec<(String, f64)>, f64)>, vars_string: &[(String, f64)], z: f64, is_min: f64) {
     let is_better = match best_solution {
         None => true,
         Some((_, best_z)) => (is_min == -1.0 && z < *best_z) || (is_min == 1.0 && z > *best_z),
     };
     if is_better {
-        *best_solution = Some((vars_string.clone(), z));
+        *best_solution = Some((vars_string.to_owned(), z));
     }
 }
 
-pub fn branch_and_bound(file: &str) -> Result<(Vec<(String, f64)>, f64, f64), String> {
+pub fn branch_and_bound(file: &str) -> Result<(Vec<(String, f64)>, f64), String> {
     let mut stack = vec![Node {
-        base_lp: file.to_string(),
+        base_lp: file.to_string().into(),
         constraints: vec![],
     }];
     let mut best_solution: Option<(Vec<(String, f64)>, f64)> = None;
-    let mut is_min_bnb = 1.0;
-
     while let Some(node) = stack.pop() {
         let lp_str = node.to_lp_string();
-        let (mut matrix, mut variables, is_min, mut vars_hash_map, original_cost, bnb) =
+        let (mut matrix, mut variables, is_min, mut variables_map, bnb) =
             match parse_lp_two_phases(&lp_str) {
                 Ok(v) => v,
                 Err(e) => {
@@ -995,20 +927,17 @@ pub fn branch_and_bound(file: &str) -> Result<(Vec<(String, f64)>, f64, f64), St
                     continue;
                 }
             };
-        is_min_bnb = is_min;
         let (vars_string, z) = match solve_system_two_phases(
             &mut matrix,
             &mut variables,
-            &mut vars_hash_map,
-            &original_cost,
+            &mut variables_map,
             is_min,
         ) {
             Ok(v) => v,
             Err(_) => continue,
         };
-
         if !bnb {
-            return Ok((vars_string, z, is_min));
+            return Ok((vars_string, z));
         }
 
         let is_current_better = match &best_solution {
@@ -1020,7 +949,7 @@ pub fn branch_and_bound(file: &str) -> Result<(Vec<(String, f64)>, f64, f64), St
              continue; // Élague si la solution courante est moins bonne que la meilleure
         }
 
-        if is_integer_solution(&vars_string, &vars_hash_map, &variables) {
+        if is_integer_solution(&vars_string, &variables_map, &variables) {
             update_best_solution(&mut best_solution, &vars_string, z, is_min);
             continue; // Élague, car on a trouvé une solution entière
         }
@@ -1029,7 +958,7 @@ pub fn branch_and_bound(file: &str) -> Result<(Vec<(String, f64)>, f64, f64), St
         let mut max_fractionality = 0.0;
         
         for (name, v) in &vars_string {
-            if let Some(idx) = vars_hash_map.get(name) {
+            if let Some(idx) = variables_map.get(name) {
                 let var = &variables[*idx];
                 if !var.is_slack && !var.is_artificial && var.is_integer {
                     let frac = (v - v.round()).abs();
@@ -1061,7 +990,7 @@ pub fn branch_and_bound(file: &str) -> Result<(Vec<(String, f64)>, f64, f64), St
     }
 
     match best_solution {
-        Some((vars, z)) => Ok((vars, z, is_min_bnb)),
+        Some((vars, z)) => Ok((vars, z)),
         None => Err("Pas de solution entière trouvée".to_string()),
     }
 }
@@ -1103,7 +1032,7 @@ fn print_system(
             .map(|(x, _)| x.as_str())
             .unwrap_or("-");
         print!("{:<8}", base);
-        print!("{}    ", variables.get(base).unwrap().cout_original);
+        print!("{}    ", variables.get(base).unwrap().current_cost);
         for val in ligne {
             print!("{:<8}", val);
         }
@@ -1123,9 +1052,9 @@ fn print_system(
             let cb = cb
                 .iter()
                 .filter(|x| x.in_base)
-                .map(|x| x.cout_original)
+                .map(|x| x.current_cost)
                 .collect::<Vec<_>>();
-            let cout = my_var.cout_original;
+            let cout = my_var.current_cost;
             let column: Vec<f64> = matrix.iter().map(|x| x[my_var.column]).collect();
             let scalar = scalar_product(&cb, &column) - cout;
             couts_z.push(format!("{}", scalar));
@@ -1140,10 +1069,11 @@ fn print_system(
 #[derive(Debug, Clone, Copy)]
 pub struct Variable {
     in_base: bool,
-    cout_original: f64,
+    current_cost: f64,
     ligne: usize,
     column: usize,
     is_slack: bool,
     is_artificial: bool,
     is_integer: bool,
+    original_cost: f64,
 }

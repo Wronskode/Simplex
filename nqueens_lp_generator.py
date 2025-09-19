@@ -1,4 +1,4 @@
-for n in range(8, 26):
+for n in range(8, 31):
     filetxt = ""
     filetxt += "min: z;\n"
     for j in range(1, n+1):
@@ -39,13 +39,13 @@ for n in range(8, 26):
             s += " <= 1;\n"
             filetxt += s
 
-    for j in range(1, n+1):
-        for i in range(1, n+1):
-            filetxt += "q_"+str(i)+"_"+str(j)+" <= 1;\n"
+    # for j in range(1, n+1):
+    #     for i in range(1, n+1):
+    #         filetxt += "q_"+str(i)+"_"+str(j)+" <= 1;\n"
 
     for j in range(1, n+1):
         for i in range(1, n+1):
             filetxt += "int q_"+str(i)+"_"+str(j)+";\n"
 
-    with open(str(n)+"queens.lp", "w") as f:
+    with open("instances/"+str(n)+"queens.lp", "w") as f:
         f.write(filetxt)
