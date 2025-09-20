@@ -10,9 +10,17 @@ use std::sync::Arc;
 pub struct LPParser;
 const PRECISION: f64 = 1.0e-6;
 const BIGM: f64 = 1.0e12;
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ObjectiveSense { Max, Min }
+pub struct SystemState {
+    pub matrix: Vec<Vec<f64>>,
+    pub vars: Vec<Variable>,
+    pub map: HashMap<String, usize>,
+    pub sense: ObjectiveSense,
+    pub ilp: bool,
+}
 
-#[inline(always)]
-fn get_solution(
+fn compute_solution_vector(
     matrix: &[Vec<f64>],
     variables: &[Variable],
     variables_map: &HashMap<String, usize>,
@@ -42,7 +50,6 @@ fn get_solution(
     Ok((vars_string, z))
 }
 
-#[inline(always)]
 fn get_objective(matrix: &[Vec<f64>], variables: &[Variable], is_min: f64) -> f64 {
     let mut z = 0.0;
     for var in variables.iter() {
@@ -53,14 +60,13 @@ fn get_objective(matrix: &[Vec<f64>], variables: &[Variable], is_min: f64) -> f6
     z * is_min
 }
 
-#[inline(always)]
 fn check_all_constraints(matrix: &[Vec<f64>], variables: &[Variable]) -> bool {
     let mut vars_sorted_by_column = variables.iter().collect::<Vec<_>>();
     vars_sorted_by_column.sort_by(|a, b| a.column.cmp(&b.column));
     for ligne in matrix.iter() {
         let val = ligne[0];
         let scalar = scalar_product(
-            &ligne.iter().skip(1).copied().collect::<Vec<_>>(),
+            &ligne.iter().skip(1).copied().collect::<Vec<_>>(), // On ignore la première colonne (vecteur b)
             &vars_sorted_by_column
                 .iter()
                 .map(|x| {
@@ -74,9 +80,9 @@ fn check_all_constraints(matrix: &[Vec<f64>], variables: &[Variable]) -> bool {
                                 0.0
                             })
                     }
-                })
-                .collect::<Vec<_>>(),
+                }).collect::<Vec<_>>(),
         );
+        // On regarde si chaque contrainte avec les variables ajoutées est respectée
         if (val - scalar).abs() > PRECISION {
             return false;
         }
@@ -84,10 +90,25 @@ fn check_all_constraints(matrix: &[Vec<f64>], variables: &[Variable]) -> bool {
     true
 }
 
-#[inline(always)]
+fn manage_coeff(s: &str) -> (f64, &str) {
+    let (sign, s) = match s {
+        _ if s.starts_with('+') => (1.0, s[1..].trim()),
+        _ if s.starts_with('-') => (-1.0, s[1..].trim()),
+        _ => {
+            if s.chars().count() == 0 {
+                (1.0, "1")
+            } else {
+                (1.0, s)
+            }
+        }
+    };
+    let coeff_str = if s.is_empty() { "1" } else { s };
+    (sign, coeff_str)
+}
+
 pub fn parse_lp_bigm(
     filename: &str,
-) -> Result<(Vec<Vec<f64>>, Vec<Variable>, f64, HashMap<String, usize>, bool), String> {
+) -> Result<SystemState, String> {
     let file = match LPParser::parse(Rule::program, filename) {
         Ok(mut file) => file.next().unwrap(),
         Err(e) => {
@@ -115,21 +136,7 @@ pub fn parse_lp_bigm(
                             }
                         }
                         Rule::coeff => {
-                            let coeff_str = token.as_str();
-                            let (sign, mut coeff_str) = match coeff_str {
-                                _ if coeff_str.starts_with('+') => (1.0, coeff_str[1..].trim()),
-                                _ if coeff_str.starts_with('-') => (-1.0, coeff_str[1..].trim()),
-                                _ => {
-                                    if coeff_str.chars().count() == 0 {
-                                        (1.0, "1")
-                                    } else {
-                                        (1.0, coeff_str)
-                                    }
-                                }
-                            };
-                            if coeff_str.is_empty() {
-                                coeff_str = "1";
-                            }
+                            let (sign, coeff_str) = manage_coeff(token.as_str());
                             cost = coeff_str.trim().parse::<f64>().unwrap() * sign * is_min;
                         }
                         Rule::varname => {
@@ -166,21 +173,7 @@ pub fn parse_lp_bigm(
                 while let Some(token) = tokens.next() {
                     match token.as_rule() {
                         Rule::coeff => {
-                            let coeff_str = token.as_str().trim();
-                            let (sign, mut coeff_str) = match coeff_str {
-                                _ if coeff_str.starts_with('+') => (1.0, coeff_str[1..].trim()),
-                                _ if coeff_str.starts_with('-') => (-1.0, coeff_str[1..].trim()),
-                                _ => {
-                                    if coeff_str.chars().count() == 0 {
-                                        (1.0, "1")
-                                    } else {
-                                        (1.0, coeff_str)
-                                    }
-                                }
-                            };
-                            if coeff_str.is_empty() {
-                                coeff_str = "1";
-                            }
+                            let (sign, coeff_str) = manage_coeff(token.as_str().trim());
                             let coeff = coeff_str.parse::<f64>().unwrap() * sign;
                             if let Some(var_token) = tokens.next() &&var_token.as_rule() == Rule::varname {
                                     let var_name = var_token.as_str().trim();
@@ -331,20 +324,20 @@ pub fn parse_lp_bigm(
             row.resize(max_len, 0.0);
         }
     }
-    Ok((matrix, variables_list, is_min, variables, bnb))
+    let state = SystemState {
+        matrix,
+        vars: variables_list,
+        map: variables,
+        sense: if is_min == 1.0 { ObjectiveSense::Max } else { ObjectiveSense::Min },
+        ilp: bnb,
+    };
+    Ok(state)
 }
 
-#[inline(always)]
 pub fn parse_lp_two_phases(
     file_content: &str,
 ) -> Result<
-    (
-        Vec<Vec<f64>>,
-        Vec<Variable>,
-        f64,
-        HashMap<String, usize>,
-        bool,
-    ),
+    SystemState,
     String,
 > {
     let file = match LPParser::parse(Rule::program, file_content) {
@@ -374,21 +367,7 @@ pub fn parse_lp_two_phases(
                             }
                         }
                         Rule::coeff => {
-                            let coeff_str = token.as_str();
-                            let (sign, mut coeff_str) = match coeff_str {
-                                _ if coeff_str.starts_with('+') => (1.0, coeff_str[1..].trim()),
-                                _ if coeff_str.starts_with('-') => (-1.0, coeff_str[1..].trim()),
-                                _ => {
-                                    if coeff_str.chars().count() == 0 {
-                                        (1.0, "1")
-                                    } else {
-                                        (1.0, coeff_str)
-                                    }
-                                }
-                            };
-                            if coeff_str.is_empty() {
-                                coeff_str = "1";
-                            }
+                            let (sign, coeff_str) = manage_coeff(token.as_str());
                             cost = coeff_str.trim().parse::<f64>().unwrap() * sign * is_min;
                         }
                         Rule::varname => {
@@ -424,21 +403,7 @@ pub fn parse_lp_two_phases(
                 while let Some(token) = tokens.next() {
                     match token.as_rule() {
                         Rule::coeff => {
-                            let coeff_str = token.as_str().trim();
-                            let (sign, mut coeff_str) = match coeff_str {
-                                _ if coeff_str.starts_with('+') => (1.0, coeff_str[1..].trim()),
-                                _ if coeff_str.starts_with('-') => (-1.0, coeff_str[1..].trim()),
-                                _ => {
-                                    if coeff_str.chars().count() == 0 {
-                                        (1.0, "1")
-                                    } else {
-                                        (1.0, coeff_str)
-                                    }
-                                }
-                            };
-                            if coeff_str.is_empty() {
-                                coeff_str = "1";
-                            }
+                            let (sign, coeff_str) = manage_coeff(token.as_str().trim());
                             let coeff = coeff_str.parse::<f64>().unwrap() * sign;
                             if let Some(var_token) = tokens.next()
                                 && var_token.as_rule() == Rule::varname {
@@ -590,12 +555,18 @@ pub fn parse_lp_two_phases(
             row.resize(max_len, 0.0);
         }
     }
-    Ok((matrix, variables_list, is_min, variables_map, bnb))
+    let state = SystemState {
+        matrix,
+        vars: variables_list,
+        map: variables_map,
+        sense: if is_min == 1.0 { ObjectiveSense::Max } else { ObjectiveSense::Min },
+        ilp: bnb,
+    };
+    Ok(state)
 }
 
-// Simplex iteration
 #[inline(always)]
-fn update_array(
+fn simplex_iteration(
     matrix: &mut [Vec<f64>],
     variables: &mut [Variable],
     sorted_by_column: &mut [usize],
@@ -627,10 +598,7 @@ fn update_array(
     let mut min = f64::MAX;
     let mut line_index = 0;
     let mut leaved = false;
-    for (i, row) in matrix.iter().enumerate() {
-        if row[min_col_index] <= 0.0 {
-            continue;
-        }
+    for (i, row) in matrix.iter().enumerate().filter(|(_, row)| row[min_col_index] >= PRECISION) {
         let scalar = row[0] / row[min_col_index];
         if in_phase_one
             && (scalar - min).abs() < PRECISION
@@ -661,7 +629,7 @@ fn update_array(
 
     let pivot = matrix[line_index][min_col_index];
     matrix[line_index].iter_mut().for_each(|x| {
-        if (*x).abs() > PRECISION {
+        if x.abs() > PRECISION {
             *x /= pivot;
         } else {
             *x = 0.0;
@@ -696,17 +664,16 @@ fn scalar_product_column(x: &[f64], matrix: &[Vec<f64>], j: usize) -> f64 {
         .map(|(i, &xi)| xi * matrix[i][j])
         .sum()
 }
-#[inline(always)]
-pub fn solve_system_two_phases(
+
+pub fn execute_two_phase_solution(
     matrix: &mut [Vec<f64>],
     variables: &mut [Variable],
     variables_map: &mut HashMap<String, usize>,
     is_min: f64,
 ) -> Result<(Vec<(String, f64)>, f64), String> {
-    let solved = two_phases(
+    let solved = simplex_two_phase_method(
         matrix,
         variables,
-        variables_map,
         is_min,
     );
 
@@ -719,11 +686,11 @@ pub fn solve_system_two_phases(
         return Err("Le problème est infaisable".to_string());
     }
     
-    get_solution(matrix, variables, variables_map, is_min)
+    compute_solution_vector(matrix, variables, variables_map, is_min)
 }
 
-#[inline(always)]
-pub fn solve_system_bigm(
+
+pub fn execute_bigm_solution(
     matrix: &mut [Vec<f64>],
     variables: &mut [Variable],
     variables_map: &mut HashMap<String, usize>,
@@ -736,7 +703,7 @@ pub fn solve_system_bigm(
         }
     }
 
-    let borned = big_m(matrix, variables, variables_map, &mut base_variables);
+    let borned = simplex_big_m_method(matrix, variables, &mut base_variables);
     
     if !borned {
         return Err("Le problème est non borné".to_string());
@@ -747,14 +714,13 @@ pub fn solve_system_bigm(
         return Err("Le problème est infaisable".to_string());
     }
     
-    get_solution(matrix, variables, variables_map, is_min)
+    compute_solution_vector(matrix, variables, variables_map, is_min)
 }
 
-#[inline(always)]
-fn two_phases(
+
+fn simplex_two_phase_method(
     matrix: &mut [Vec<f64>],
     variables: &mut [Variable],
-    hmap_vars: &mut HashMap<String, usize>,
     is_min: f64,
 ) -> bool {
     let mut base_variables = vec![0; matrix.len()];
@@ -764,11 +730,11 @@ fn two_phases(
         }
     }
 
-    let mut sorted_by_column = hmap_vars.values().copied().collect::<Vec<_>>();
+    let mut sorted_by_column = (0..variables.len()).collect::<Vec<_>>();
     sorted_by_column.sort_by(|a, b| variables[*a].column.cmp(&variables[*b].column));
 
     let mut in_base = variables
-        .par_iter()
+        .iter()
         .filter(|x| x.in_base)
         .map(|x| (x.ligne, x.current_cost))
         .collect::<Vec<_>>();
@@ -776,7 +742,7 @@ fn two_phases(
     let mut in_base = in_base.iter().map(|x| x.1).collect::<Vec<_>>();
     // Phase 1 : minimisation des variables artificielles
     loop {
-        let (s1, s2) = update_array(
+        let (s1, s2) = simplex_iteration(
             matrix,
             variables,
             &mut sorted_by_column,
@@ -789,7 +755,7 @@ fn two_phases(
         let all_positive = s1 && s2;
         matrix.par_iter_mut().for_each(|row| {
             row.iter_mut().for_each(|x| {
-                if (*x).abs() <= PRECISION {
+                if x.abs() <= PRECISION {
                     *x = 0.0;
                 }
             });
@@ -797,7 +763,7 @@ fn two_phases(
 
         if z.abs() < PRECISION {
             let art_in_base = variables
-                .par_iter()
+                .iter()
                 .filter(|x| x.in_base && x.is_artificial && matrix[x.ligne][0].abs() > PRECISION);
             if art_in_base.count() > 0 {
                 return false;
@@ -812,7 +778,7 @@ fn two_phases(
                 x.current_cost = original_cost;
             }
             loop {
-                let (ended, borned) = update_array(
+                let (ended, borned) = simplex_iteration(
                     matrix,
                     variables,
                     &mut sorted_by_column,
@@ -824,7 +790,7 @@ fn two_phases(
 
                 matrix.par_iter_mut().for_each(|row| {
                     row.iter_mut().for_each(|x| {
-                        if (*x).abs() <= PRECISION {
+                        if x.abs() <= PRECISION {
                             *x = 0.0;
                         }
                     });
@@ -839,18 +805,17 @@ fn two_phases(
     }
 }
 
-#[inline(always)]
-fn big_m(
+
+fn simplex_big_m_method(
     matrix: &mut [Vec<f64>],
     variables: &mut [Variable],
-    hmap_vars: &mut HashMap<String, usize>,
     base_variables: &mut [usize],
 ) -> bool {
-    let mut sorted_by_column = hmap_vars.values().copied().collect::<Vec<_>>();
+    let mut sorted_by_column = (0..variables.len()).collect::<Vec<_>>();
     sorted_by_column.sort_by(|a, b| variables[*a].column.cmp(&variables[*b].column));
 
     let mut in_base = variables
-        .par_iter()
+        .iter()
         .filter(|x| x.in_base)
         .map(|x| (x.ligne, x.current_cost))
         .collect::<Vec<_>>();
@@ -858,7 +823,7 @@ fn big_m(
     let mut in_base = in_base.iter().map(|x| x.1).collect::<Vec<_>>();
 
     loop {        
-        let (ended, borned) = update_array(
+        let (ended, borned) = simplex_iteration(
             matrix,
             variables,
             &mut sorted_by_column,
@@ -867,6 +832,13 @@ fn big_m(
             false,
             false,
         );
+        matrix.par_iter_mut().for_each(|row| {
+            row.iter_mut().for_each(|x| {
+                if x.abs() <= PRECISION {
+                    *x = 0.0;
+                }
+            });
+        });
         if ended {
             return borned;
         }
@@ -892,7 +864,7 @@ impl Node {
 fn is_integer_solution(vars_string: &[(String, f64)], variables_map: &HashMap<String, usize>, variables: &[Variable]) -> bool {
     for (name, v) in vars_string {
         if let Some(idx) = variables_map.get(name) {
-            let var = &variables[*idx];
+            let var = variables[*idx];
             if !var.is_slack && !var.is_artificial && var.is_integer && (v - v.round()).abs() > PRECISION {
                 return false;
             }
@@ -911,7 +883,7 @@ fn update_best_solution(best_solution: &mut Option<(Vec<(String, f64)>, f64)>, v
     }
 }
 
-pub fn branch_and_bound(file: &str) -> Result<(Vec<(String, f64)>, f64), String> {
+pub fn branch_and_bound(file: &str, with_two_phases: bool) -> Result<(Vec<(String, f64)>, f64), String> {
     let mut stack = vec![Node {
         base_lp: file.to_string().into(),
         constraints: vec![],
@@ -919,15 +891,26 @@ pub fn branch_and_bound(file: &str) -> Result<(Vec<(String, f64)>, f64), String>
     let mut best_solution: Option<(Vec<(String, f64)>, f64)> = None;
     while let Some(node) = stack.pop() {
         let lp_str = node.to_lp_string();
-        let (mut matrix, mut variables, is_min, mut variables_map, bnb) =
-            match parse_lp_two_phases(&lp_str) {
+        let state= if with_two_phases {
+                match parse_lp_two_phases(&lp_str) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        println!("parse_lp_two_phases failed for:\n{}\nError: {:?}", lp_str, e);
+                        continue;
+                    }
+                }
+            } else  {
+            match parse_lp_bigm(&lp_str) {
                 Ok(v) => v,
                 Err(e) => {
-                    println!("parse_lp_two_phases failed for:\n{}\nError: {:?}", lp_str, e);
+                    println!("parse_lp_bigm failed for:\n{}\nError: {:?}", lp_str, e);
                     continue;
                 }
-            };
-        let (vars_string, z) = match solve_system_two_phases(
+            }
+        };
+        let (mut matrix, mut variables, is_min, mut variables_map, bnb) =
+            (state.matrix, state.vars, if state.sense == ObjectiveSense::Min { -1.0 } else { 1.0 }, state.map, state.ilp);
+        let (vars_string, z) = if with_two_phases{ match execute_two_phase_solution(
             &mut matrix,
             &mut variables,
             &mut variables_map,
@@ -935,7 +918,16 @@ pub fn branch_and_bound(file: &str) -> Result<(Vec<(String, f64)>, f64), String>
         ) {
             Ok(v) => v,
             Err(_) => continue,
-        };
+        }
+    } else { match execute_bigm_solution(
+            &mut matrix,
+            &mut variables,
+            &mut variables_map,
+            is_min,
+        ) {
+            Ok(v) => v,
+            Err(_) => continue,
+        }};
         if !bnb {
             return Ok((vars_string, z));
         }
@@ -995,7 +987,7 @@ pub fn branch_and_bound(file: &str) -> Result<(Vec<(String, f64)>, f64), String>
     }
 }
 
-fn print_system(
+pub fn print_system(
     matrix: &[Vec<f64>],
     variables: &[Variable],
     hash_map_vars: &HashMap<String, usize>,
