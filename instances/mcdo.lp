@@ -5,7 +5,7 @@ min: 3.5 fritesmoy + 4 fritesgr + 4.2 nuggets + 6 bigmac + 9.67 bigtasty + 4.4 m
 41 fritesmoy + 54 fritesgr + 13 nuggets + 42 bigmac + 35 bigtasty +  50 mcflurry + 49 sundae + 9.8 caesar + 35 triplecheese + 59 chevre +65 bbq + 63 avocado + 24 mcfirstpoisson + 4 salade >= 250;
 3.9 fritesmoy + 5.1 fritesgr + 10 nuggets + 27 bigmac + 37 bigtasty + 7 mcflurry + 7 sundae + 34 caesar + 38 triplecheese + 15 chevre +29 bbq + 29 avocado + 9.4 mcfirstpoisson + 1 salade >= 60;
 4 fritesmoy + 5.3 fritesgr + 0.6 nuggets + 3.1 bigmac + 2.9 bigtasty + 1 mcflurry + 1 sundae + 2.7 caesar + 2.1 triplecheese + 3 chevre +4 bbq + 3.5 avocado + 1.6 mcfirstpoisson + 1 salade >= 30;
-1.38 fritesmoy + 1.8 fritesgr + 0.7 nuggets + 2.2 bigmac + 3.7 bigtasty + 0 mcflurry + 0 sundae + 1.4 caesar + 3.3 triplecheese + 2.2 chevre +6.5 bbq + 3.7 avocado + 0.99 mcfirstpoisson + 1.75 salade <= 12;
+1.38 fritesmoy + 1.8 fritesgr + 0.7 nuggets + 2.2 bigmac + 3.7 bigtasty + 10.1 mcflurry + 9.3 sundae + 1.4 caesar + 3.3 triplecheese + 2.2 chevre +6.5 bbq + 3.7 avocado + 0.99 mcfirstpoisson + 1.75 salade <= 12;
 
 int fritesmoy;
 int fritesgr;

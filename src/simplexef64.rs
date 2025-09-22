@@ -3,7 +3,6 @@ use pest_derive::Parser;
 use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 #[derive(Parser)]
 #[grammar = "lexer.pest"]
@@ -16,7 +15,7 @@ pub struct SystemState {
     pub matrix: Vec<Vec<f64>>,
     pub vars: Vec<Variable>,
     pub map: HashMap<String, usize>,
-    pub sense: ObjectiveSense,
+    pub sense: ObjectiveSense,  
     pub ilp: bool,
 }
 
@@ -582,7 +581,8 @@ fn simplex_iteration(
         .map(|(i, _)| {
             let y = variables[sorted_by_column[i]];
             if !y.in_base && (!in_phase_two || !y.is_artificial) {
-                Some((i + 1, scalar_product_column(in_base, matrix, i + 1) - y.current_cost))
+                let j = i+1;
+                Some((j, scalar_product_column(in_base, matrix, j) - y.current_cost))
             } else {
                 None
             }
@@ -591,7 +591,7 @@ fn simplex_iteration(
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .unwrap_or((0, f64::MAX));
 
-    if min >= 0.0 {
+    if min >= -PRECISION {
         return (true, true);
     }
 
@@ -617,6 +617,19 @@ fn simplex_iteration(
         return (true, false);
     }
 
+    update_basics_variables(variables, base_variables, sorted_by_column, in_base, line_index, min_col_index);
+    update_pivot(matrix, line_index, min_col_index);
+    (false, true)
+}
+
+fn update_basics_variables(
+    variables: &mut [Variable],
+    base_variables: &mut [usize],
+    sorted_by_column: &mut [usize],
+    in_base: &mut [f64],    
+    line_index: usize,
+    min_col_index: usize,
+) {
     let var_to_leave = base_variables[line_index];
     variables[var_to_leave].in_base = false;
     variables[var_to_leave].ligne = usize::MAX;
@@ -626,7 +639,9 @@ fn simplex_iteration(
     variables[new_base_var_index].ligne = line_index;
     in_base[line_index] = variables[new_base_var_index].current_cost;
     base_variables[line_index] = new_base_var_index;
+}
 
+fn update_pivot(matrix: &mut [Vec<f64>], line_index: usize, min_col_index: usize) {
     let pivot = matrix[line_index][min_col_index];
     matrix[line_index].iter_mut().for_each(|x| {
         if x.abs() > PRECISION {
@@ -643,8 +658,6 @@ fn simplex_iteration(
             row[j] -= x * coeff;
         });
     });
-
-    (false, true)
 }
 
 #[inline(always)]
@@ -754,12 +767,12 @@ fn simplex_two_phase_method(
         let z = get_objective(matrix, variables, is_min);
         let all_positive = s1 && s2;
         matrix.par_iter_mut().for_each(|row| {
-            row.iter_mut().for_each(|x| {
-                if x.abs() <= PRECISION {
-                    *x = 0.0;
-                }
+                row.iter_mut().for_each(|x| {
+                    if x.abs() <= PRECISION {
+                        *x = 0.0;
+                    }
+                });
             });
-        });
 
         if z.abs() < PRECISION {
             let art_in_base = variables
@@ -844,18 +857,32 @@ fn simplex_big_m_method(
         }
     }
 }
-#[derive(Clone)]
+
+#[derive(Clone, Copy)]
+pub enum Operator {
+    Leq,
+    Geq,
+}
+
+impl Operator {
+    fn to_string(&self) -> String {
+        match self {
+            Operator::Leq => String::from("<="),
+            Operator::Geq => String::from(">="),
+        }
+    }
+}
+
 struct Node {
-    base_lp: Arc<String>,
-    constraints: Vec<(String, String, f64)>,
+    constraints: Vec<(String, Operator, f64)>,
 }
 
 impl Node {
-    fn to_lp_string(&self) -> String {
-        let mut full_lp = String::with_capacity(self.base_lp.len() + self.constraints.len() * 30);
-        full_lp.push_str(&self.base_lp);
+    fn to_lp_string(&self, lp_str: &str) -> String {
+        let mut full_lp = String::with_capacity(lp_str.len() + self.constraints.len());
+        full_lp.push_str(lp_str);
         for (var, op, val) in &self.constraints {
-            full_lp.push_str(&format!("\n{} {} {};", var, op, val));
+            full_lp.push_str(&format!("\n{} {} {};", var, op.to_string(), val));
         }
         full_lp
     }
@@ -883,14 +910,17 @@ fn update_best_solution(best_solution: &mut Option<(Vec<(String, f64)>, f64)>, v
     }
 }
 
-pub fn branch_and_bound(file: &str, with_two_phases: bool) -> Result<(Vec<(String, f64)>, f64), String> {
+pub fn branch_and_bound(file: &str, with_two_phases: bool) -> Result<(Vec<(String, f64)>, f64, i32), String> {
     let mut stack = vec![Node {
-        base_lp: file.to_string().into(),
         constraints: vec![],
     }];
+    let file_str = &file.to_string();
     let mut best_solution: Option<(Vec<(String, f64)>, f64)> = None;
+    let mut explored_nodes = 0;
     while let Some(node) = stack.pop() {
-        let lp_str = node.to_lp_string();
+        explored_nodes += 1;
+        let lp_str = node.to_lp_string(file_str);
+        // println!("Solving LP:\n{}\n", lp_str);
         let state= if with_two_phases {
                 match parse_lp_two_phases(&lp_str) {
                     Ok(v) => v,
@@ -929,7 +959,7 @@ pub fn branch_and_bound(file: &str, with_two_phases: bool) -> Result<(Vec<(Strin
             Err(_) => continue,
         }};
         if !bnb {
-            return Ok((vars_string, z));
+            return Ok((vars_string, z, explored_nodes));
         }
 
         let is_current_better = match &best_solution {
@@ -938,7 +968,7 @@ pub fn branch_and_bound(file: &str, with_two_phases: bool) -> Result<(Vec<(Strin
         };
 
         if !is_current_better {
-             continue; // Élague si la solution courante est moins bonne que la meilleure
+            continue; // Élague si la solution courante est moins bonne que la meilleure
         }
 
         if is_integer_solution(&vars_string, &variables_map, &variables) {
@@ -966,24 +996,22 @@ pub fn branch_and_bound(file: &str, with_two_phases: bool) -> Result<(Vec<(Strin
             let value_inf = val.floor();
             let value_sup = val.ceil();
             let mut constraints1 = node.constraints.clone();
-            constraints1.push((nom.clone(), "<=".to_string(), value_inf));
+            constraints1.push((nom.clone(), Operator::Leq, value_inf));
             stack.push(Node {
-                base_lp: node.base_lp.clone(),
                 constraints: constraints1,
             });
 
             let mut constraints2 = node.constraints;
-            constraints2.push((nom, ">=".to_string(), value_sup));
+            constraints2.push((nom, Operator::Geq, value_sup));
             stack.push(Node {
-                base_lp: node.base_lp,
                 constraints: constraints2,
             });
         }
     }
 
     match best_solution {
-        Some((vars, z)) => Ok((vars, z)),
-        None => Err("Pas de solution entière trouvée".to_string()),
+        Some((vars, z)) => Ok((vars, z, explored_nodes)),
+        None => Err("Pas de solution trouvée".to_string()),
     }
 }
 

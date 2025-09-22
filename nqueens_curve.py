@@ -64,7 +64,7 @@ def plot_performance_curve(n_values, times, nend):
 
 if __name__ == "__main__":
     n_start = 8
-    n_end = 40
+    n_end = 50
     
     n_values, times = run_simplexe_nqueens(n_start, n_end)
 

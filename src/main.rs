@@ -50,7 +50,7 @@ async fn simplexe(lpfile: String) -> impl IntoResponse {
 async fn branch_and_bound(lpfile: String) -> impl IntoResponse {
     let (variables,z) = 
     match simplexef64::branch_and_bound(&lpfile, true) {
-        Ok((variables, z)) => (variables, z),
+        Ok((variables, z, _)) => (variables, z),
         Err(e) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, e.into_response());
         }
@@ -60,9 +60,9 @@ async fn branch_and_bound(lpfile: String) -> impl IntoResponse {
 
 fn branch_and_bound_cmd(lpfile: String, with_two_phases: bool) {
     let now = std::time::Instant::now();
-    let (variables, z) = 
+    let (variables, z, explored_nodes) = 
     match simplexef64::branch_and_bound(&lpfile, with_two_phases) {
-        Ok((variables, z)) => (variables, z),
+        Ok((variables, z, explored_nodes)) => (variables, z, explored_nodes),
         Err(e) => {
             println!("❌ Failed to solve LP with error: {:?}", e);
             return;
@@ -74,6 +74,7 @@ fn branch_and_bound_cmd(lpfile: String, with_two_phases: bool) {
         println!("{:width$} = {}", var, val, width = max_var_len);
     }
     println!("Value of objective function: {z}",);
+    println!("Number of explored nodes: {explored_nodes}");
     println!("Time taken: {:?}", now.elapsed());
 }
 
